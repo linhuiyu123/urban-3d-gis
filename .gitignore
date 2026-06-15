@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+backend/.env
+
+# Node
+node_modules/
+dist/
+frontend/.env
+
+# 抓取缓存（OSMnx/Overpass 的本地缓存，体积大，不入库）
+data/cache/
+
+# 数据成果（真实抓取后的数据可按需保留；若想把真实数据一并入库，删掉这几行即可）
+data/*/pois.geojson
+data/*/roads.geojson
+data/*/shelters.geojson
+data/*/water.geojson
+data/*/dem.npy

@@ -1,0 +1,79 @@
+/* ===== 全局主题：暗色 + 玻璃拟态（glassmorphism） ===== */
+:root {
+  --bg: #0a0e1a;
+  --panel: rgba(18, 24, 40, 0.72);
+  --panel-solid: #121828;
+  --border: rgba(120, 160, 255, 0.18);
+  --text: #e6ecf7;
+  --text-dim: #8a97b4;
+  --accent: #4da3ff;
+  --accent-2: #7cf6c8;
+  --warn: #ff9d5c;
+  --danger: #ff5c7c;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #app {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* 玻璃面板通用样式 */
+.glass {
+  background: var(--panel);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(120,160,255,.25); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 通用按钮 */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border); color: var(--text);
+  background: rgba(77, 163, 255, 0.08);
+  font-size: 13px; transition: all .18s ease; user-select: none;
+}
+.btn:hover { background: rgba(77,163,255,.20); transform: translateY(-1px); }
+.btn.active { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; }
+.btn.ghost { background: transparent; }
+.btn.sm { padding: 5px 10px; font-size: 12px; }
+
+/* 输入控件 */
+input[type="text"], textarea, select {
+  background: rgba(10,16,30,.7); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text); padding: 9px 12px; font-size: 13px;
+  width: 100%; outline: none;
+}
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+label { font-size: 12px; color: var(--text-dim); }
+
+.title-gradient {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+.fade-enter-active, .fade-leave-active { transition: opacity .25s ease, transform .25s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; transform: translateY(8px); }
+
+.tag {
+  display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px;
+  background:rgba(124,246,200,.12); color:var(--accent-2); border:1px solid rgba(124,246,200,.25);
+}
+.spinner {
+  width:16px;height:16px;border:2px solid rgba(255,255,255,.25);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

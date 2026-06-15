@@ -1,0 +1,24 @@
+# Web 框架
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+pydantic-settings==2.3.4
+python-dotenv==1.0.1
+
+# 空间分析核心
+geopandas==0.14.4
+shapely==2.0.4
+numpy==1.26.4
+scipy==1.13.1
+networkx==3.3
+
+# 空间统计（热点 / 自相关）。若安装困难可注释，后端会自动降级
+esda==2.5.1
+libpysal==4.11.0
+
+# 数据抓取（运行 data/fetch_data.py 时需要，可选）
+osmnx==1.9.3
+requests==2.32.3
+
+# 大模型调用
+openai==1.35.3
