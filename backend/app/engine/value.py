@@ -17,12 +17,13 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import numpy as np
-from scipy.spatial import cKDTree
+from scipy.spatial import KDTree
 
 from ..config import CITIES
-from ..data_loader import POI_CATEGORIES, pois_by_category
+from ..data_loader import POI_CATEGORIES, load_roads, pois_by_category
 from . import geoutils
 
 # 每类设施的默认权重与影响距离（米）。权重之和不必为 1，最终会归一化。
@@ -62,14 +63,45 @@ def _area_decay_scale(bbox: list[float]) -> float:
 
 def _nearest_distances(city: str, gx: np.ndarray, gy: np.ndarray, category: str) -> np.ndarray:
     """计算每个网格点到指定类别最近 POI 的距离（米）。无该类 POI 时返回较大距离。"""
+    if category == "road":
+        coords = _road_vertices(city)
+        if len(coords):
+            px, py = geoutils.lonlat_to_utm(city, coords[:, 0], coords[:, 1])
+            tree = KDTree(np.column_stack([px, py]))
+            dist, _ = tree.query(np.column_stack([gx, gy]), k=1)
+            return dist
+
     feats = pois_by_category(city, category)
     coords = geoutils.coords_array(feats)
     if len(coords) == 0:
         return np.full(gx.shape, 1e9)
     px, py = geoutils.lonlat_to_utm(city, coords[:, 0], coords[:, 1])
-    tree = cKDTree(np.column_stack([px, py]))
+    tree = KDTree(np.column_stack([px, py]))
     dist, _ = tree.query(np.column_stack([gx, gy]), k=1)
     return dist
+
+
+@lru_cache(maxsize=8)
+def _road_vertices(city: str) -> np.ndarray:
+    """从道路 LineString 提取折点坐标，用于道路邻近度计算。
+
+    真实 OSM 道路存放在 roads.geojson，而不是 POI 的 road 类别。
+    若没有道路文件，再回退到样例 POI 中可能存在的 road 点。
+    """
+    coords: list[list[float]] = []
+    for feat in load_roads(city).get("features", []):
+        geom = feat.get("geometry") or {}
+        if geom.get("type") == "LineString":
+            coords.extend(geom.get("coordinates", []))
+        elif geom.get("type") == "MultiLineString":
+            for line in geom.get("coordinates", []):
+                coords.extend(line)
+
+    if coords:
+        return np.array(coords, dtype=float)
+
+    feats = pois_by_category(city, "road")
+    return geoutils.coords_array(feats)
 
 
 def assess_value(city: str, weights: dict[str, float] | None = None,
@@ -161,5 +193,6 @@ def site_selection(city: str, min_score: float = 70.0,
         "meta": {"city": city, "min_score": min_score, "count": len(feats),
                  "qualified": n_qualified,           # 达标地块总数（top_k 截断前）
                  "top_score": round(feats[0]["properties"]["score"], 1) if feats else 0,
-                 "resolution": resolution},
+                 "resolution": resolution,
+                 "weights": grid["meta"]["weights"]},
     }

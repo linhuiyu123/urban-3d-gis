@@ -29,6 +29,7 @@ class SiteReq(BaseModel):
     min_score: float = 70
     top_k: int | None = None
     weights: dict[str, float] | None = None
+    resolution: int = Field(48, ge=20, le=100)
 
 
 class RouteReq(BaseModel):
@@ -50,6 +51,13 @@ class EvacReq(BaseModel):
 
 class CityReq(BaseModel):
     city: str = DEFAULT_CITY
+
+
+class HotspotReq(BaseModel):
+    city: str = DEFAULT_CITY
+    weights: dict[str, float] | None = None
+    resolution: int = Field(48, ge=20, le=100)
+    k: int = Field(8, ge=2, le=32)
 
 
 class ServiceReq(BaseModel):
@@ -119,7 +127,7 @@ def post_value(req: ValueReq):
 @router.post("/analysis/site")
 def post_site(req: SiteReq):
     _check_city(req.city)
-    return value.site_selection(req.city, req.min_score, req.weights, top_k=req.top_k)
+    return value.site_selection(req.city, req.min_score, req.weights, req.resolution, top_k=req.top_k)
 
 
 # ---------- 路径规划 ----------
@@ -139,10 +147,10 @@ def post_evacuate(req: EvacReq):
 
 # ---------- 空间统计：热点 ----------
 @router.post("/stats/hotspot")
-def post_hotspot(req: CityReq):
+def post_hotspot(req: HotspotReq):
     _check_city(req.city)
-    grid = value.assess_value(req.city)
-    return stats.hotspot(grid)
+    grid = value.assess_value(req.city, req.weights, req.resolution)
+    return stats.hotspot(grid, k=req.k)
 
 
 # ---------- 服务区 / 等时圈 ----------
