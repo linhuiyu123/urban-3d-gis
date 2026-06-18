@@ -16,6 +16,17 @@ from importlib import import_module
 import numpy as np
 from scipy.spatial import KDTree
 
+
+DETAIL_ATTRS = {
+    "scenic": "detail.scenic",
+    "commercial": "detail.commercial",
+    "school": "detail.school",
+    "hospital": "detail.hospital",
+    "transit": "detail.transit",
+    "road": "detail.road",
+}
+
+
 def _has_pysal() -> bool:
     """检查 PySAL 依赖是否可用；父包缺失时保持降级路径可用。"""
     try:
@@ -26,6 +37,14 @@ def _has_pysal() -> bool:
 
 
 _HAS_PYSAL = _has_pysal()
+
+
+def _feature_value(properties: dict, attr: str) -> float:
+    """读取 score 或 detail.<category> 形式的统计字段。"""
+    if attr.startswith("detail."):
+        key = attr.split(".", 1)[1]
+        return float(properties.get("detail", {}).get(key, 0.0))
+    return float(properties.get(attr, 0.0))
 
 
 def _extract(fc: dict, attr: str = "score") -> tuple[np.ndarray, np.ndarray]:
@@ -39,7 +58,7 @@ def _extract(fc: dict, attr: str = "score") -> tuple[np.ndarray, np.ndarray]:
             ring = f["geometry"]["coordinates"][0]
             arr = np.array(ring)
             coords.append([arr[:, 0].mean(), arr[:, 1].mean()])
-        vals.append(float(p.get(attr, 0)))
+        vals.append(_feature_value(p, attr))
     return np.array(coords, dtype=float), np.array(vals, dtype=float)
 
 
@@ -104,6 +123,7 @@ def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
     返回：在原 FeatureCollection 基础上，为每个要素追加 gi_z（z 分数）与
     hot_class（hot/cold/none），并在 meta 中给出全局 Moran's I 与显著性。
     """
+    attr = DETAIL_ATTRS.get(attr, attr)
     coords, vals = _extract(fc, attr)
     if len(vals) < k + 1:
         return {**fc, "meta": {**fc.get("meta", {}), "attr": attr, "k": k,

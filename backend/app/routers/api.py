@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from ..config import CITIES, DEFAULT_CITY
@@ -58,6 +60,12 @@ class HotspotReq(BaseModel):
     weights: dict[str, float] | None = None
     resolution: int = Field(48, ge=20, le=100)
     k: int = Field(8, ge=2, le=32)
+    attr: Literal[
+        "score",
+        "scenic", "commercial", "school", "hospital", "transit", "road",
+        "detail.scenic", "detail.commercial", "detail.school",
+        "detail.hospital", "detail.transit", "detail.road",
+    ] = "score"
 
 
 class ServiceReq(BaseModel):
@@ -150,7 +158,7 @@ def post_evacuate(req: EvacReq):
 def post_hotspot(req: HotspotReq):
     _check_city(req.city)
     grid = value.assess_value(req.city, req.weights, req.resolution)
-    return stats.hotspot(grid, k=req.k)
+    return stats.hotspot(grid, attr=req.attr, k=req.k)
 
 
 # ---------- 服务区 / 等时圈 ----------
