@@ -10,16 +10,41 @@
 """
 from __future__ import annotations
 
-import numpy as np
-from scipy.spatial import cKDTree
+import importlib.util
+from importlib import import_module
 
-try:                       # 优先用 PySAL
-    from esda.moran import Moran
-    from esda.getisord import G_Local
-    from libpysal.weights import KNN
-    _HAS_PYSAL = True
-except Exception:          # 环境缺失则降级
-    _HAS_PYSAL = False
+import numpy as np
+from scipy.spatial import KDTree
+
+
+DETAIL_ATTRS = {
+    "scenic": "detail.scenic",
+    "commercial": "detail.commercial",
+    "school": "detail.school",
+    "hospital": "detail.hospital",
+    "transit": "detail.transit",
+    "road": "detail.road",
+}
+
+
+def _has_pysal() -> bool:
+    """检查 PySAL 依赖是否可用；父包缺失时保持降级路径可用。"""
+    try:
+        return all(importlib.util.find_spec(m) is not None
+                   for m in ("esda.moran", "esda.getisord", "libpysal.weights"))
+    except ModuleNotFoundError:
+        return False
+
+
+_HAS_PYSAL = _has_pysal()
+
+
+def _feature_value(properties: dict, attr: str) -> float:
+    """读取 score 或 detail.<category> 形式的统计字段。"""
+    if attr.startswith("detail."):
+        key = attr.split(".", 1)[1]
+        return float(properties.get("detail", {}).get(key, 0.0))
+    return float(properties.get(attr, 0.0))
 
 
 def _extract(fc: dict, attr: str = "score") -> tuple[np.ndarray, np.ndarray]:
@@ -33,15 +58,32 @@ def _extract(fc: dict, attr: str = "score") -> tuple[np.ndarray, np.ndarray]:
             ring = f["geometry"]["coordinates"][0]
             arr = np.array(ring)
             coords.append([arr[:, 0].mean(), arr[:, 1].mean()])
-        vals.append(float(p.get(attr, 0)))
+        vals.append(_feature_value(p, attr))
     return np.array(coords, dtype=float), np.array(vals, dtype=float)
 
 
 def _knn_weights(coords: np.ndarray, k: int = 8) -> list[np.ndarray]:
     """K 近邻空间权重：返回每个点的邻居下标数组。"""
-    tree = cKDTree(coords)
+    tree = KDTree(coords)
     _, idx = tree.query(coords, k=k + 1)   # 含自身
     return [row[1:] for row in idx]        # 去掉自身
+
+
+def _pysal_hotspot(coords: np.ndarray, vals: np.ndarray, k: int) -> tuple[float, float, np.ndarray]:
+    """使用 PySAL 计算 Moran's I 与 Gi*。
+
+    这里用动态导入，避免在未安装 PySAL 的开发环境中让 Pylance 报
+    Moran/KNN/G_Local 未绑定或缺失导入；运行时仍会优先使用 PySAL。
+    """
+    moran_mod = import_module("esda.moran")
+    getisord_mod = import_module("esda.getisord")
+    weights_mod = import_module("libpysal.weights")
+
+    w = weights_mod.KNN.from_array(coords, k=k)
+    w.transform = "r"
+    mi = moran_mod.Moran(vals, w)
+    gi = getisord_mod.G_Local(vals, w, star=True)
+    return float(mi.I), float(mi.p_sim), np.array(gi.Zs, dtype=float)
 
 
 def _moran_manual(vals: np.ndarray, neighbors: list[np.ndarray]) -> float:
@@ -81,9 +123,11 @@ def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
     返回：在原 FeatureCollection 基础上，为每个要素追加 gi_z（z 分数）与
     hot_class（hot/cold/none），并在 meta 中给出全局 Moran's I 与显著性。
     """
+    attr = DETAIL_ATTRS.get(attr, attr)
     coords, vals = _extract(fc, attr)
     if len(vals) < k + 1:
-        return {**fc, "meta": {**fc.get("meta", {}), "error": "样本过少，无法做空间统计"}}
+        return {**fc, "meta": {**fc.get("meta", {}), "attr": attr, "k": k,
+                               "error": "样本过少，无法做空间统计"}}
 
     neighbors = _knn_weights(coords, k)
 
@@ -94,12 +138,7 @@ def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
             import warnings                    # 静默返回 NaN（如 Gi* 的除零）——两种都要回退，
             with warnings.catch_warnings():   # 否则 NaN 进 JSON 序列化会直接 500。
                 warnings.simplefilter("ignore")   # 屏蔽 esda 的 divide/Gi* 提示（噪声日志）
-                w = KNN.from_array(coords, k=k)
-                w.transform = "r"
-                mi = Moran(vals, w)
-                moran_i, moran_p = float(mi.I), float(mi.p_sim)
-                gi = G_Local(vals, w, star=True)
-                gi_z = np.array(gi.Zs, dtype=float)
+                moran_i, moran_p, gi_z = _pysal_hotspot(coords, vals, k)
             if not (np.isfinite(moran_i) and np.isfinite(gi_z).all()):
                 raise ValueError("PySAL 返回非有限值(NaN/inf)，改用内置实现")
             engine = "PySAL"
@@ -128,6 +167,9 @@ def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
         "type": "FeatureCollection",
         "features": out_feats,
         "meta": {
+            **fc.get("meta", {}),
+            "attr": attr,
+            "k": k,
             "moran_I": round(moran_i, 4),
             "moran_p": (None if moran_p != moran_p else round(moran_p, 4)),
             "interpretation": ("高值/低值显著空间聚集（正自相关）" if moran_i > 0.1

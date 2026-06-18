@@ -23,6 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 from app.config import AREAS, DATA_DIR     # noqa: E402
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+HEADERS = {
+    "User-Agent": "urban-3d-gis-course-project/1.0 (student data fetch)",
+}
 
 POI_QUERIES = {
     "scenic": 'node["tourism"~"attraction|museum|viewpoint|theme_park"]',
@@ -38,7 +41,7 @@ def _overpass(query: str, retries: int = 2):
     import requests
     for i in range(retries + 1):
         try:
-            r = requests.post(OVERPASS_URL, data={"data": query}, timeout=180)
+            r = requests.post(OVERPASS_URL, data={"data": query}, headers=HEADERS, timeout=180)
             r.raise_for_status()
             return r.json()
         except Exception as ex:
@@ -100,8 +103,16 @@ def fetch_water(bbox):
 
 
 def fetch_roads(bbox, big: bool):
-    """用 OSMnx 抓路网。大范围只取主干/次干道以控制规模。"""
-    import osmnx as ox
+    """抓取路网。优先用 OSMnx；缺少依赖时退回 Overpass way 查询。
+
+    大范围只取主干/次干道以控制规模。Overpass fallback 不做拓扑简化，
+    但会输出与后端 routing.build_graph 兼容的 LineString GeoJSON。
+    """
+    try:
+        import osmnx as ox
+    except ImportError:
+        return fetch_roads_overpass(bbox, big)
+
     if big:
         cf = '["highway"~"motorway|trunk|primary|secondary"]'
     else:
@@ -121,6 +132,32 @@ def fetch_roads(bbox, big: bool):
                       "geometry": {"type": "LineString", "coordinates": coords},
                       "properties": {"speed": speed, "kind": hwy}})
     print(f"    roads: {len(feats)} 段")
+    return {"type": "FeatureCollection", "features": feats}
+
+
+def fetch_roads_overpass(bbox, big: bool):
+    """不依赖 OSMnx 的道路抓取 fallback。"""
+    s, w, n, e = bbox[1], bbox[0], bbox[3], bbox[2]
+    hwy_re = "motorway|trunk|primary|secondary" if big \
+        else "motorway|trunk|primary|secondary|tertiary|residential|unclassified"
+    q = (f'[out:json][timeout:180];('
+         f'way["highway"~"{hwy_re}"]({s},{w},{n},{e});'
+         f');out geom;')
+    data = _overpass(q)
+    feats = []
+    for el in data.get("elements", []):
+        geom = el.get("geometry")
+        if not geom or len(geom) < 2:
+            continue
+        coords = [[p["lon"], p["lat"]] for p in geom]
+        hwy = el.get("tags", {}).get("highway")
+        hwy = hwy[0] if isinstance(hwy, list) else hwy
+        speed = {"motorway": 90, "trunk": 70, "primary": 60, "secondary": 50,
+                 "tertiary": 40, "residential": 30, "unclassified": 30}.get(hwy, 35)
+        feats.append({"type": "Feature",
+                      "geometry": {"type": "LineString", "coordinates": coords},
+                      "properties": {"speed": speed, "kind": hwy, "source": "overpass"}})
+    print(f"    roads: {len(feats)} 段（Overpass fallback）")
     return {"type": "FeatureCollection", "features": feats}
 
 
