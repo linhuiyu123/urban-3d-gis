@@ -8,9 +8,11 @@ python-dotenv==1.0.1
 # 空间分析核心
 geopandas==0.14.4
 shapely==2.0.4
+pyproj==3.6.1
 numpy==1.26.4
 scipy==1.13.1
 networkx==3.3
+rasterio==1.3.10
 
 # 空间统计（热点 / 自相关）。若安装困难可注释，后端会自动降级
 esda==2.5.1
