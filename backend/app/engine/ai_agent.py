@@ -13,6 +13,9 @@ AI 空间分析助手。
 from __future__ import annotations
 
 import json
+import math
+import re
+from copy import deepcopy
 
 from ..config import CITIES, DEFAULT_CITY, settings
 from . import value, routing, stats, service_area, flood
@@ -25,6 +28,7 @@ TOOLS = [
         "description": "评估研究区每个网格的住房/地段综合价值（缓冲+距离衰减+加权叠加），返回价值热力网格。",
         "parameters": {"type": "object", "properties": {
             "city": {"type": "string", "enum": list(CITIES.keys())},
+            "resolution": {"type": "integer", "description": "网格分辨率，默认 48"},
         }, "required": ["city"]}}},
     {"type": "function", "function": {
         "name": "site_selection",
@@ -33,6 +37,7 @@ TOOLS = [
             "city": {"type": "string", "enum": list(CITIES.keys())},
             "min_score": {"type": "number", "description": "分数阈值 0-100，默认 70"},
             "top_k": {"type": "integer", "description": "仅取最高的 K 个地块"},
+            "resolution": {"type": "integer", "description": "网格分辨率，默认 48"},
         }, "required": ["city"]}}},
     {"type": "function", "function": {
         "name": "route",
@@ -42,6 +47,7 @@ TOOLS = [
             "start": {"type": "array", "items": {"type": "number"}, "description": "[lon,lat] 起点"},
             "end": {"type": "array", "items": {"type": "number"}, "description": "[lon,lat] 终点"},
             "optimize": {"type": "string", "enum": ["time", "length"]},
+            "mode": {"type": "string", "enum": ["drive", "cycle", "walk", "transit"]},
         }, "required": ["city", "start", "end"]}}},
     {"type": "function", "function": {
         "name": "evacuate",
@@ -49,12 +55,15 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "city": {"type": "string", "enum": list(CITIES.keys())},
             "start": {"type": "array", "items": {"type": "number"}},
+            "mode": {"type": "string", "enum": ["drive", "cycle", "walk", "transit"]},
         }, "required": ["city", "start"]}}},
     {"type": "function", "function": {
         "name": "hotspot",
         "description": "对价值评估结果做热点/空间自相关分析（Moran's I + Getis-Ord Gi*），识别高值/低值聚集区。",
         "parameters": {"type": "object", "properties": {
             "city": {"type": "string", "enum": list(CITIES.keys())},
+            "attr": {"type": "string", "enum": ["score", "scenic", "commercial", "school", "hospital", "transit", "road"]},
+            "k": {"type": "integer", "description": "近邻数量，默认 8"},
         }, "required": ["city"]}}},
     {"type": "function", "function": {
         "name": "isochrone",
@@ -63,6 +72,7 @@ TOOLS = [
             "city": {"type": "string", "enum": list(CITIES.keys())},
             "center": {"type": "array", "items": {"type": "number"}},
             "bands": {"type": "array", "items": {"type": "number"}, "description": "分钟档位，如 [5,10,15]"},
+            "mode": {"type": "string", "enum": ["drive", "cycle", "walk", "transit"]},
         }, "required": ["city", "center"]}}},
     {"type": "function", "function": {
         "name": "flood",
@@ -70,6 +80,7 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "city": {"type": "string", "enum": list(CITIES.keys())},
             "water_level": {"type": "number", "description": "水位（米），默认 6"},
+            "resolution": {"type": "integer", "description": "淹没分辨率，默认 100"},
         }, "required": ["city"]}}},
 ]
 
@@ -85,6 +96,140 @@ SYSTEM_PROMPT = (
 # 简单的服务端多轮会话存储：session_id -> messages 历史
 SESSIONS: dict[str, list] = {}
 MAX_HISTORY = 14   # 控制上下文长度
+MOCK_STATE: dict[str, dict] = {}
+
+
+def _city_aliases() -> dict[str, str]:
+    aliases = {
+        "杭州都市区": "hangzhou_metro",
+        "杭州市都市区": "hangzhou_metro",
+        "都市区": "hangzhou_metro",
+        "杭州全域": "hangzhou_full",
+        "杭州市全域": "hangzhou_full",
+        "全域": "hangzhou_full",
+        "杭州主城区": "hangzhou_core",
+        "杭州市主城区": "hangzhou_core",
+        "主城区": "hangzhou_core",
+        "杭州主城": "hangzhou_core",
+        "杭州市主城": "hangzhou_core",
+        "主城": "hangzhou_core",
+        "杭州市": "hangzhou_core",
+        "杭州": "hangzhou_core",
+        "东京": "tokyo",
+        "tokyo": "tokyo",
+    }
+    for key, meta in CITIES.items():
+        aliases[key.lower()] = key
+        aliases[str(meta.get("name", "")).lower()] = key
+    return aliases
+
+
+CITY_ALIASES = _city_aliases()
+
+
+def _clamp_num(v, lo: float, hi: float, default: float) -> float:
+    try:
+        if v is None:
+            return default
+        x = float(v)
+        if not math.isfinite(x):
+            return default
+        return min(max(x, lo), hi)
+    except Exception:
+        return default
+
+
+def _clamp_int(v, lo: int, hi: int, default: int) -> int:
+    return int(round(_clamp_num(v, lo, hi, default)))
+
+
+def _extract_city(prompt: str, fallback: str = DEFAULT_CITY) -> str:
+    p = prompt.lower()
+    for alias, city in sorted(CITY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias and alias in p:
+            return city
+    return fallback if fallback in CITIES else DEFAULT_CITY
+
+
+def _extract_numbers(prompt: str) -> list[float]:
+    return [float(x) for x in re.findall(r"[-+]?\d+(?:\.\d+)?", prompt)]
+
+
+def _extract_coord(prompt: str) -> list[float] | None:
+    matches = re.findall(r"([-+]?\d+(?:\.\d+)?)\s*[,，]\s*([-+]?\d+(?:\.\d+)?)", prompt)
+    for a, b in matches:
+        lon, lat = float(a), float(b)
+        if 70 <= lon <= 150 and 0 <= lat <= 60:
+            return [lon, lat]
+    return None
+
+
+def _infer_mode(prompt: str) -> str:
+    if any(k in prompt for k in ["步行", "走路", "徒步"]):
+        return "walk"
+    if any(k in prompt for k in ["骑行", "自行车", "单车"]):
+        return "cycle"
+    if any(k in prompt for k in ["公交", "地铁", "公共交通"]):
+        return "transit"
+    return "drive"
+
+
+def _infer_optimize(prompt: str) -> str:
+    if any(k in prompt for k in ["最短", "距离短", "少走"]):
+        return "length"
+    return "time"
+
+
+def _infer_attr(prompt: str) -> str:
+    mapping = {
+        "景点": "scenic", "旅游": "scenic",
+        "商业": "commercial", "商圈": "commercial",
+        "学校": "school", "学区": "school",
+        "医院": "hospital", "医疗": "hospital",
+        "交通": "transit", "公交": "transit", "地铁": "transit",
+        "道路": "road", "主干道": "road",
+    }
+    for key, attr in mapping.items():
+        if key in prompt:
+            return attr
+    return "score"
+
+
+def _city_point(city: str, dx: float = 0.0, dy: float = 0.0) -> list[float]:
+    lon, lat = CITIES[city]["center"]
+    return [round(lon + dx, 6), round(lat + dy, 6)]
+
+
+def _safe_point(city: str, point, dx: float = 0.0, dy: float = 0.0) -> list[float]:
+    if isinstance(point, (list, tuple)) and len(point) >= 2:
+        try:
+            lon, lat = float(point[0]), float(point[1])
+            if math.isfinite(lon) and math.isfinite(lat):
+                return [lon, lat]
+        except Exception:
+            pass
+    return _city_point(city, dx, dy)
+
+
+def _summarize_layer(kind: str, layer: dict) -> str:
+    meta = layer.get("meta", {}) if isinstance(layer, dict) else {}
+    if kind == "value":
+        return f"均值 {meta.get('score_mean', '-')}, P90 {meta.get('score_p90', '-')}, 最高 {meta.get('score_max', '-')}。"
+    if kind == "site":
+        return f"筛出 {meta.get('count', 0)} 个地块，最高分 {meta.get('top_score', 0)}。"
+    if kind == "flood":
+        return f"淹没面积约 {meta.get('flooded_area_km2', 0)} km²，淹没单元 {meta.get('flooded_cells', 0)} 个。"
+    if kind in ("route", "evacuate"):
+        feats = layer.get("features", [])
+        line = feats[0].get("properties", {}) if feats else {}
+        if line:
+            return f"路线约 {line.get('length_m', 0)} 米，预计 {line.get('time_min', 0)} 分钟。"
+        return meta.get("error", "未找到可达路线。")
+    if kind == "isochrone":
+        return f"生成 {len(layer.get('features', []))} 个等时圈。"
+    if kind == "hotspot":
+        return f"Moran's I={meta.get('moran_i', '-')}, 热点统计字段 {meta.get('attr', 'score')}。"
+    return "结果已生成。"
 
 
 # ---- 2. 工具分发：把模型选定的函数真正执行 ---------------------------------
@@ -92,50 +237,127 @@ MAX_HISTORY = 14   # 控制上下文长度
 def _dispatch(name: str, args: dict, context_point=None) -> dict:
     """执行指定分析函数，返回 {layer, kind} 供前端渲染。"""
     city = args.get("city", DEFAULT_CITY)
+    if city not in CITIES:
+        city = DEFAULT_CITY
 
     def pt(key):  # 取坐标参数，缺失时回退到 context_point 或城市中心
-        return args.get(key) or context_point or CITIES[city]["center"]
+        return _safe_point(city, args.get(key) or context_point)
 
     if name == "assess_value":
-        return {"kind": "value", "layer": value.assess_value(city)}
+        resolution = _clamp_int(args.get("resolution"), 24, 96, 48)
+        return {"kind": "value", "layer": value.assess_value(city, resolution=resolution)}
     if name == "site_selection":
+        resolution = _clamp_int(args.get("resolution"), 24, 96, 48)
         return {"kind": "site", "layer": value.site_selection(
-            city, args.get("min_score", 70), top_k=args.get("top_k"))}
+            city,
+            _clamp_num(args.get("min_score"), 0, 100, 70),
+            resolution=resolution,
+            top_k=_clamp_int(args.get("top_k"), 1, 200, 30) if args.get("top_k") else None)}
     if name == "route":
+        start = _safe_point(city, args.get("start") or context_point, -0.04, 0.0)
+        end = _safe_point(city, args.get("end"), 0.04, 0.02)
+        if start == end:
+            end = _city_point(city, 0.05, 0.02)
         return {"kind": "route", "layer": routing.route(
-            city, pt("start"), pt("end"), args.get("optimize", "time"))}
+            city, start, end, args.get("optimize", "time"), mode=args.get("mode", "drive"))}
     if name == "evacuate":
-        return {"kind": "evacuate", "layer": routing.evacuate(city, pt("start"))}
+        return {"kind": "evacuate", "layer": routing.evacuate(
+            city, pt("start"), mode=args.get("mode", "drive"))}
     if name == "hotspot":
-        grid = value.assess_value(city)
-        return {"kind": "hotspot", "layer": stats.hotspot(grid)}
+        grid = value.assess_value(city, resolution=_clamp_int(args.get("resolution"), 24, 96, 48))
+        return {"kind": "hotspot", "layer": stats.hotspot(
+            grid, attr=args.get("attr", "score"), k=_clamp_int(args.get("k"), 3, 16, 8))}
     if name == "isochrone":
         return {"kind": "isochrone", "layer": service_area.isochrone(
-            city, pt("center"), tuple(args.get("bands", (5, 10, 15))))}
+            city, pt("center"), tuple(args.get("bands", (5, 10, 15))), mode=args.get("mode", "drive"))}
     if name == "flood":
-        return {"kind": "flood", "layer": flood.simulate(city, args.get("water_level", 6.0))}
+        return {"kind": "flood", "layer": flood.simulate(
+            city,
+            _clamp_num(args.get("water_level"), 0.5, 40, 6.0),
+            _clamp_int(args.get("resolution"), 40, 160, 100))}
     raise ValueError(f"未知工具 {name}")
 
 
 # ---- 3. Mock 规则引擎（无 Key 时的降级方案） -------------------------------
 
-def _mock_plan(prompt: str) -> tuple[str, dict]:
+def _mock_plan(prompt: str, city: str = DEFAULT_CITY, context_point=None,
+               previous: dict | None = None) -> tuple[str, dict]:
     """用关键词粗略判断意图，返回 (函数名, 参数)。"""
-    p = prompt.lower()
-    city = "tokyo" if ("东京" in prompt or "tokyo" in p) else DEFAULT_CITY
+    city = _extract_city(prompt, city)
+    args: dict = {"city": city}
+    nums = _extract_numbers(prompt)
+    coord = _extract_coord(prompt)
+
+    if previous and any(k in prompt for k in ["再", "继续", "换成", "改成", "调到", "提高", "降低"]):
+        name = previous.get("tool") or "assess_value"
+        args.update(deepcopy(previous.get("args") or {}))
+        args["city"] = city
+    else:
+        name = ""
+
     if any(k in prompt for k in ["撤离", "逃生", "避难", "疏散"]):
-        return "evacuate", {"city": city}
-    if any(k in prompt for k in ["淹没", "洪水", "内涝", "水位"]):
-        return "flood", {"city": city}
-    if any(k in prompt for k in ["热点", "聚集", "自相关", "moran"]):
-        return "hotspot", {"city": city}
-    if any(k in prompt for k in ["等时", "服务区", "分钟", "可达"]):
-        return "isochrone", {"city": city}
-    if any(k in prompt for k in ["选址", "筛选", "优质", "高价值", "最好的"]):
-        return "site_selection", {"city": city, "min_score": 75}
-    if any(k in prompt for k in ["路线", "路径", "通勤", "怎么走", "导航"]):
-        return "route", {"city": city}
-    return "assess_value", {"city": city}
+        name = "evacuate"
+    elif any(k in prompt for k in ["淹没", "洪水", "内涝", "水位", "涨水"]):
+        name = "flood"
+    elif any(k in prompt for k in ["热点", "聚集", "自相关", "moran", "冷点"]):
+        name = "hotspot"
+    elif any(k in prompt for k in ["等时", "服务区", "分钟", "可达"]):
+        name = "isochrone"
+    elif any(k in prompt for k in ["选址", "筛选", "优质", "高价值", "最好的", "地块"]):
+        name = "site_selection"
+    elif any(k in prompt for k in ["路线", "路径", "通勤", "怎么走", "导航", "最短", "最快"]):
+        name = "route"
+    elif not name:
+        name = "assess_value"
+
+    if name in ("route", "evacuate", "isochrone"):
+        args["mode"] = _infer_mode(prompt)
+    if name == "route":
+        args["optimize"] = _infer_optimize(prompt)
+        args["start"] = coord or context_point or args.get("start") or _city_point(city, -0.04, 0.0)
+        args["end"] = args.get("end") or _city_point(city, 0.04, 0.02)
+    elif name == "evacuate":
+        args["start"] = coord or context_point or args.get("start") or CITIES[city]["center"]
+    elif name == "isochrone":
+        args["center"] = coord or context_point or args.get("center") or CITIES[city]["center"]
+        minutes = [int(n) for n in nums if 1 <= n <= 120]
+        if minutes:
+            if len(minutes) == 1:
+                m = minutes[0]
+                args["bands"] = sorted(set([max(5, round(m / 3)), max(5, round(m * 2 / 3)), m]))
+            else:
+                args["bands"] = sorted(set(minutes[:4]))
+        else:
+            args.setdefault("bands", [5, 10, 15])
+    elif name == "flood":
+        level_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:米|m|M)", prompt)
+        if level_match:
+            args["water_level"] = float(level_match.group(1))
+        elif nums:
+            args["water_level"] = nums[0]
+        else:
+            args.setdefault("water_level", 6.0)
+    elif name == "site_selection":
+        if nums:
+            if any(k in prompt for k in ["前", "top", "Top", "TOP", "个"]):
+                args["top_k"] = int(nums[0])
+                args.setdefault("min_score", 60)
+            else:
+                args["min_score"] = nums[0]
+        else:
+            args.setdefault("min_score", 75)
+        args.setdefault("top_k", 30)
+    elif name == "hotspot":
+        args["attr"] = _infer_attr(prompt)
+        if nums:
+            args["k"] = int(nums[0])
+
+    if "高分辨率" in prompt or "精细" in prompt:
+        args["resolution"] = 120 if name == "flood" else 72
+    elif "快速" in prompt or "粗略" in prompt:
+        args["resolution"] = 70 if name == "flood" else 36
+
+    return name, args
 
 
 # ---- 4. 对外入口 -----------------------------------------------------------
@@ -147,15 +369,25 @@ TOOL_CN = {
 }
 
 
-def _mock_result(prompt: str, city: str, context_point, steps: list, note: str | None = None) -> dict:
+def _mock_result(prompt: str, city: str, context_point, steps: list,
+                 note: str | None = None, session_id: str = "default") -> dict:
     """用关键词规则引擎执行一次分析并组织返回（无 Key 或在线服务不可用时使用）。"""
-    name, args = _mock_plan(prompt)
+    previous = MOCK_STATE.get(session_id)
+    name, args = _mock_plan(prompt, city, context_point, previous)
     args.setdefault("city", city)
     steps.append(f"选择工具：{TOOL_CN.get(name, name)}")
+    steps.append(f"调用参数：{json.dumps(args, ensure_ascii=False)}")
     steps.append("执行空间分析引擎")
-    result = _dispatch(name, args, context_point)
+    try:
+        result = _dispatch(name, args, context_point)
+    except Exception as exc:
+        steps.append(f"执行失败：{type(exc).__name__}: {exc}")
+        return {"reply": f"无法完成「{TOOL_CN.get(name, name)}」：{exc}",
+                "tool": name, "args": args, "engine": "mock(降级)" if note else "mock",
+                "kind": None, "layer": None, "steps": steps}
     steps.append("生成回答并联动地图")
-    base = f"已为你执行「{TOOL_CN.get(name, name)}」，结果已在地图上高亮。"
+    MOCK_STATE[session_id] = {"tool": name, "args": deepcopy(args)}
+    base = f"已为你执行「{TOOL_CN.get(name, name)}」，{_summarize_layer(result['kind'], result['layer'])}结果已在地图上高亮。"
     return {"reply": (note + base) if note else base, "tool": name, "args": args,
             "engine": "mock(降级)" if note else "mock", "steps": steps, **result}
 
@@ -172,7 +404,7 @@ def analyze(prompt: str, city: str = DEFAULT_CITY, context_point=None,
     steps = ["理解需求与上下文"]
 
     if not settings.deepseek_api_key:
-        return _mock_result(prompt, city, context_point, steps)
+        return _mock_result(prompt, city, context_point, steps, session_id=session_id)
 
     # ---- DeepSeek 分支（function calling + 会话历史）----
     try:
@@ -210,11 +442,19 @@ def analyze(prompt: str, city: str = DEFAULT_CITY, context_point=None,
                                                      "arguments": call.function.arguments}}]})
         name = call.function.name
         args = json.loads(call.function.arguments or "{}")
-        args.setdefault("city", city)
+        args["city"] = _extract_city(prompt, args.get("city") or city)
         steps.append(f"选择工具：{TOOL_CN.get(name, name)}")
         steps.append(f"调用参数：{json.dumps(args, ensure_ascii=False)}")
         steps.append("执行空间分析引擎")
-        result = _dispatch(name, args, context_point)
+        try:
+            result = _dispatch(name, args, context_point)
+        except Exception as exc:
+            steps.append(f"执行失败：{type(exc).__name__}: {exc}")
+            reply = f"我识别到需要执行「{TOOL_CN.get(name, name)}」，但分析引擎返回错误：{exc}"
+            history.append({"role": "assistant", "content": reply})
+            _trim(history)
+            return {"reply": reply, "tool": name, "args": args, "engine": "deepseek",
+                    "kind": None, "layer": None, "steps": steps}
 
         summary = result["layer"].get("meta", {}) if isinstance(result.get("layer"), dict) else {}
         history.append({"role": "tool", "tool_call_id": call.id,
@@ -223,6 +463,7 @@ def analyze(prompt: str, city: str = DEFAULT_CITY, context_point=None,
         reply = second.choices[0].message.content
         history.append({"role": "assistant", "content": reply or ""})
         steps.append("生成回答并联动地图")
+        MOCK_STATE[session_id] = {"tool": name, "args": deepcopy(args)}
         _trim(history)
         return {"reply": reply, "tool": name, "args": args, "engine": "deepseek", "steps": steps, **result}
 
@@ -235,7 +476,8 @@ def analyze(prompt: str, city: str = DEFAULT_CITY, context_point=None,
         reason = f"{type(e).__name__}: {e}"
         steps.append(f"DeepSeek 调用失败：{reason}（已降级本地规则引擎）")
         return _mock_result(prompt, city, context_point, steps,
-                            note=f"（DeepSeek 暂不可用：{reason}；已用本地规则引擎完成）")
+                            note=f"（DeepSeek 暂不可用：{reason}；已用本地规则引擎完成）",
+                            session_id=session_id)
 
 
 def _trim(history: list) -> None:
@@ -246,3 +488,4 @@ def _trim(history: list) -> None:
 
 def reset_session(session_id: str = "default") -> None:
     SESSIONS.pop(session_id, None)
+    MOCK_STATE.pop(session_id, None)

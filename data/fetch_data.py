@@ -10,17 +10,40 @@
     cd data
     python fetch_data.py                 # 抓取全部研究区
     python fetch_data.py hangzhou_core   # 仅抓某区域
+    python fetch_data.py --water-only hangzhou_metro
+    python fetch_data.py --only water hangzhou_core hangzhou_metro
 
 说明：范围越大抓取越慢；杭州全域(hangzhou_full)数据量大，建议优先 core/metro。
 国内访问 Overpass/OSM 可能较慢或需代理；失败时后端自动回退内置样例，不影响启动。
 """
+import argparse
 import json
 import sys
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-from app.config import AREAS, DATA_DIR     # noqa: E402
+try:
+    from app.config import AREAS, DATA_DIR     # noqa: E402
+except ModuleNotFoundError as exc:
+    if exc.name != "pydantic_settings":
+        raise
+
+    # fetch_data.py only needs the static AREAS/DATA_DIR values from config.py.
+    # Allow data fetching on machines that did not install the full backend runtime.
+    pydantic_settings = types.ModuleType("pydantic_settings")
+
+    class BaseSettings:
+        pass
+
+    def SettingsConfigDict(**kwargs):
+        return kwargs
+
+    pydantic_settings.BaseSettings = BaseSettings
+    pydantic_settings.SettingsConfigDict = SettingsConfigDict
+    sys.modules["pydantic_settings"] = pydantic_settings
+    from app.config import AREAS, DATA_DIR     # noqa: E402
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 HEADERS = {
@@ -161,18 +184,24 @@ def fetch_roads_overpass(bbox, big: bool):
     return {"type": "FeatureCollection", "features": feats}
 
 
-def main(areas):
+FETCHERS = {
+    "pois": lambda cfg, big: fetch_pois(cfg["bbox"]),
+    "water": lambda cfg, big: fetch_water(cfg["bbox"]),
+    "roads": lambda cfg, big: fetch_roads(cfg["bbox"], big),
+}
+
+
+def main(areas, kinds=None):
+    kinds = kinds or ["pois", "water", "roads"]
     for area in areas:
         cfg = AREAS[area]
         big = (cfg["bbox"][2] - cfg["bbox"][0]) > 0.6   # 经度跨度大于0.6°视为大范围
-        print(f"[{cfg['name']}] 抓取中（big={big}）…")
+        print(f"[{cfg['name']}] 抓取中（big={big}, kinds={','.join(kinds)}）…")
         out = DATA_DIR / area
         out.mkdir(parents=True, exist_ok=True)
-        for fn, fetch in [("pois", lambda: fetch_pois(cfg["bbox"])),
-                          ("water", lambda: fetch_water(cfg["bbox"])),
-                          ("roads", lambda: fetch_roads(cfg["bbox"], big))]:
+        for fn in kinds:
             try:
-                fc = fetch()
+                fc = FETCHERS[fn](cfg, big)
                 n = len(fc.get("features", []))
                 if n == 0:
                     # 关键：抓到 0 要素绝不落盘。否则空文件会覆盖内置样例，
@@ -188,6 +217,33 @@ def main(areas):
         print(f"[{cfg['name']}] 完成。")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Fetch OSM data for project areas.")
+    parser.add_argument(
+        "areas",
+        nargs="*",
+        choices=list(AREAS.keys()),
+        help="研究区 id；不填则抓取全部研究区。",
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        choices=list(FETCHERS.keys()),
+        metavar="KIND",
+        help="只抓指定数据层，可选：pois water roads。例如：--only water",
+    )
+    parser.add_argument(
+        "--water-only",
+        action="store_true",
+        help="等价于 --only water。",
+    )
+    args = parser.parse_args()
+    if args.water_only:
+        args.only = ["water"]
+    return args
+
+
 if __name__ == "__main__":
-    targets = sys.argv[1:] or list(AREAS.keys())
-    main(targets)
+    args = parse_args()
+    targets = args.areas or list(AREAS.keys())
+    main(targets, args.only)
