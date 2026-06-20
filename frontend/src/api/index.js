@@ -20,13 +20,15 @@ export const api = {
     http.post('/api/analysis/value', { city, weights, resolution }).then(r => r.data),
   site: (city, min_score, top_k, weights) =>
     http.post('/api/analysis/site', { city, min_score, top_k, weights }).then(r => r.data),
-  route: (city, start, end, optimize, hazard, mode, vias) =>
-    http.post('/api/route', { city, start, end, optimize, hazard, mode, vias }).then(r => r.data),
+  route: (city, start, end, optimize, hazard, mode, vias, alternatives) =>
+    http.post('/api/route', { city, start, end, optimize, hazard, mode, vias, alternatives }).then(r => r.data),
+  routeAmap: (start, end, optimize, mode, vias, alternatives) =>
+    http.post('/api/route/amap', { start, end, optimize, mode, vias, alternatives }).then(r => r.data),
   evacuate: (city, start, hazard, mode) =>
     http.post('/api/evacuate', { city, start, hazard, mode }).then(r => r.data),
   hotspot: (city) => http.post('/api/stats/hotspot', { city }).then(r => r.data),
-  serviceArea: (city, center, bands, mode) =>
-    http.post('/api/service-area', { city, center, bands, mode }).then(r => r.data),
+  serviceArea: (city, center, bands, mode, baidu = false) =>
+    http.post('/api/service-area', { city, center, bands, mode, baidu }).then(r => r.data),
   flood: (city, water_level, resolution) =>
     http.post('/api/flood', { city, water_level, resolution }).then(r => r.data),
   floodAnimation: (city, target_level, frames, resolution) =>

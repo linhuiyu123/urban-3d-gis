@@ -88,8 +88,10 @@
           <button class="btn sm" :class="{ active: optimize === 'time' }" @click="optimize = 'time'">最快</button>
           <button class="btn sm" :class="{ active: optimize === 'length' }" @click="optimize = 'length'">最短</button>
         </div>
+        <label class="chk"><input type="checkbox" v-model="useAmap" /> 用高德在线路线（含实时路况用时，需配置 AMAP_KEY）</label>
+        <label class="chk"><input type="checkbox" v-model="routeAlts" /> 多条备选（勾高德=最多3条·同网页版；否则自研最快+最短）</label>
         <button class="btn primary" :disabled="!picks.routeStart || !picks.routeEnd"
-          @click="emitRun('runRoute', { optimize, mode: routeMode })">▶ 通勤路径</button>
+          @click="emitRun('runRoute', { optimize, mode: routeMode, amap: useAmap, alts: routeAlts })">▶ 通勤路径</button>
         <p v-if="!picks.routeStart || !picks.routeEnd" class="hint-inline">请先选起点和终点</p>
 
         <div class="divider"></div>
@@ -126,8 +128,9 @@
             <input type="checkbox" :value="b" v-model="bands" /> {{ b }}
           </label>
         </div>
+        <label class="chk"><input type="checkbox" v-model="isoBaidu" /> 用百度实时路况（仅杭州，含拥堵；需配置 BAIDU_AK）</label>
         <button class="btn primary" :disabled="!picks.isoCenter || !bands.length"
-          @click="emitRun('runServiceArea', { bands: [...bands].sort((a,b)=>a-b), mode: isoMode })">▶ 生成等时圈</button>
+          @click="emitRun('runServiceArea', { bands: [...bands].sort((a,b)=>a-b), mode: isoMode, baidu: isoBaidu })">▶ 生成等时圈</button>
         <p v-if="!picks.isoCenter" class="hint-inline">请先选设施中心点</p>
         <p class="tip">沿路网计算从中心点出发 N 分钟可达范围，常用于设施服务能力评估。各档用绿→红分明配色。</p>
       </section>
@@ -188,8 +191,8 @@ export default {
       minScore: 70, topK: '', optimize: 'time', siteFocus: '',
       bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, floodRes: 100,
       eyeHeight: 30, radius: 600,
-      routeMode: 'drive', isoMode: 'drive',
-      modes: [{ v: 'drive', t: '🚗 驾车' }, { v: 'cycle', t: '🚲 骑行' }, { v: 'walk', t: '🚶 步行' }, { v: 'transit', t: '🚌 公交' }],
+      routeMode: 'drive', isoMode: 'drive', useAmap: false, routeAlts: false, isoBaidu: false,
+      modes: [{ v: 'drive', t: '🚗 驾车' }, { v: 'cycle', t: '🚲 骑行' }, { v: 'walk', t: '🚶 步行' }, { v: 'transit', t: '🚇 公交/地铁' }],
       modules: [
         { key: 'buildings', icon: '🏢', label: '白模底座', desc: '城市白模底座（Cesium OSM Buildings 全球数据），可切换底图、查看建筑高度与日照阴影。' },
         { key: 'value', icon: '💰', label: '价值评估', desc: '多因子缓冲 + 距离衰减 + 加权叠加，生成三维地段价值热力。权重系数可调。' },
@@ -201,6 +204,10 @@ export default {
         { key: 'viewshed', icon: '👁', label: '视域分析', desc: '考虑建筑高度的真三维视域 / 通视分析。' }
       ]
     }
+  },
+  watch: {
+    // 取消所有时间档时清掉旧等时圈，避免"按钮禁用但旧结果仍在"的控件/结果不一致
+    bands(v) { if (!v.length) this.emitRun('clearIso') }
   },
   computed: {
     current() { return this.modules.find(m => m.key === this.active) },

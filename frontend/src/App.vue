@@ -28,7 +28,7 @@
       @run="onRun" @pick="startPick" @toggle-poi="togglePoi" @toggle-height="toggleHeight"
       @sun="setSun" @shadows="toggleShadows" @terrain="setTerrainOn" @clear="clearAll" @clear-vias="clearVias" />
 
-    <ResultPanel :result="result" />
+    <ResultPanel :result="result" @highlight="onHighlightRoute" />
 
     <AIChat :city="currentCity" :contextPoint="picks.lastClick" @result="onAIResult" />
 
@@ -147,13 +147,20 @@ export default {
       setSunlight(this.viewer, hour, darkNight)
     },
     toggleShadows(on) { this.shadowsOn = on; setShadows(this.viewer, on) },
-    clearAll() { this._stopFloodAnim(); this.lm.clearAll(); this.result = null; this.floodHazard = null; this.picks.routeVias = [] },
+    clearAll() {
+      this._stopFloodAnim(); this.lm.clearAll(); this.result = null; this.floodHazard = null
+      // 清掉所有选点，避免切换城市后用旧坐标算路（含起点/终点/撤离点/中心点/观察点/途径点）
+      this.picks = { routeStart: null, routeEnd: null, evacStart: null, isoCenter: null, observer: null, lastClick: null, routeVias: [] }
+    },
 
     async onRun(action) {
       this.busy = true
       try { await this[action.fn](action.payload || {}) }
       catch (e) { this.flash('分析失败：' + (e?.response?.data?.detail || e.message), 5000) }
       finally { this.busy = false }
+    },
+    clearIso() {                                       // 取消所有时间档时清掉旧等时圈图层与结果
+      this.lm.clear('iso'); if (this.result?.kind === 'iso') this.result = null
     },
 
     async runValue({ weights, resolution }) {
@@ -167,18 +174,35 @@ export default {
       this.result = { kind: 'site', meta: fc.meta }
       this.flash(`选址：找到 ${fc.meta.count} 个达标地块`)
     },
-    async runRoute({ optimize, mode }) {
+    async runRoute({ optimize, mode, amap, alts }) {
       if (!this.picks.routeStart || !this.picks.routeEnd) return this.flash('请先在地图选起点和终点')
-      const fc = await api.route(this.currentCity, this.picks.routeStart, this.picks.routeEnd,
-        optimize, null, mode, this.picks.routeVias)
-      if (!fc.features.length) return this.flash(fc.meta?.error || '未找到可达路径，可能超出已抓取的路网范围')
-      this.lm.renderRoute(fc, 'route', '#4da3ff')
-      this.result = { kind: 'route', meta: fc.features[0].properties }
+      // 勾高德→高德 v5（alts 时 alternative_route=3，多条与网页版一致）；
+      // 没勾高德但勾多备选→自研路网"最快+最短"；都不勾→自研单条。
+      let fc, online = false
+      const isHz = (this.currentCity || '').startsWith('hangzhou')
+      if (amap || (mode === 'transit' && isHz)) {   // 公交/地铁仅杭州走高德；海外(如东京)走内置近似
+        fc = await api.routeAmap(this.picks.routeStart, this.picks.routeEnd, optimize, mode, this.picks.routeVias, alts)
+        online = true
+      } else if (alts) {
+        fc = await api.route(this.currentCity, this.picks.routeStart, this.picks.routeEnd, optimize, null, mode, this.picks.routeVias, true)
+      } else {
+        fc = await api.route(this.currentCity, this.picks.routeStart, this.picks.routeEnd, optimize, null, mode, this.picks.routeVias, false)
+      }
+      if (!fc.features.length) {                       // 失败：清旧路线与旧结果，避免残留误导
+        this.lm.clear('route'); this.result = null
+        return this.flash(fc.meta?.error || '未找到可达路径，可能超出已抓取的路网范围')
+      }
+      this.lm.renderRoute(fc, 'route', online ? '#7cf6c8' : '#4da3ff')
+      // fc.meta 覆盖：公交/地铁的总距离/时长/换乘段(legs)在 meta 里；驾车的距离/时间在要素里
+      this.result = { kind: 'route', meta: { ...fc.features[0].properties, ...fc.meta } }
     },
     async runEvacuate({ mode } = {}) {
       if (!this.picks.evacStart) return this.flash('请先在地图选撤离起点')
       const fc = await api.evacuate(this.currentCity, this.picks.evacStart, this.floodHazard, mode)
-      if (!fc.features.length) return this.flash(fc.meta?.error || '未找到可达避难场所')
+      if (!fc.features.length) {                       // 失败：清旧图层与旧结果
+        this.lm.clear('route'); this.result = null
+        return this.flash(fc.meta?.error || '未找到可达避难场所')
+      }
       this.lm.renderRoute(fc, 'route', '#ff5c7c')
       this.result = { kind: 'evacuate', meta: fc.meta }
     },
@@ -187,9 +211,13 @@ export default {
       this.lm.clear('value'); this.lm.renderHotspot(fc)
       this.result = { kind: 'hotspot', meta: fc.meta }
     },
-    async runServiceArea({ bands, mode }) {
+    async runServiceArea({ bands, mode, baidu }) {
       if (!this.picks.isoCenter) return this.flash('请先在地图选设施中心点')
-      const fc = await api.serviceArea(this.currentCity, this.picks.isoCenter, bands, mode)
+      const fc = await api.serviceArea(this.currentCity, this.picks.isoCenter, bands, mode, baidu)
+      if (!fc.features.length) {                       // 失败：清旧图层与旧结果并提示
+        this.lm.clear('iso'); this.result = null
+        return this.flash(fc.meta?.error || '该点无法生成等时圈')
+      }
       this.lm.renderIsochrone(fc)
       this.result = { kind: 'iso', meta: fc.meta }
     },
@@ -222,6 +250,7 @@ export default {
       this._floodTimer = setInterval(play, 750)
     },
     _stopFloodAnim() { if (this._floodTimer) { clearInterval(this._floodTimer); this._floodTimer = null } },
+    onHighlightRoute(i) { if (this.lm) this.lm.highlightRoute(i) },
     async runViewshed({ eyeHeight, radius }) {
       if (!this.picks.observer) return this.flash('请先在地图选观察点')
       this.flash('三维视域计算中…')
