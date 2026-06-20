@@ -182,8 +182,8 @@ export default {
       this.lm.renderRoute(fc, 'route', '#ff5c7c')
       this.result = { kind: 'evacuate', meta: fc.meta }
     },
-    async runHotspot({ weights, resolution, attr, k } = {}) {
-      const fc = await api.hotspot(this.currentCity, weights, resolution, k, attr)
+    async runHotspot({ weights, resolution, attr, k, zThreshold } = {}) {
+      const fc = await api.hotspot(this.currentCity, weights, resolution, k, attr, zThreshold)
       this.lm.clear('value'); this.lm.renderHotspot(fc)
       this.result = { kind: 'hotspot', meta: fc.meta }
     },
