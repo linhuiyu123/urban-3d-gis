@@ -124,9 +124,21 @@ export function styleBuildingsByHeight(tileset, on) {
 }
 
 export function flyToCity(viewer, cfg) {
+  if (cfg.bbox && cfg.bbox.length === 4) {
+    const [west, south, east, north] = cfg.bbox
+    const rect = Cesium.Rectangle.fromDegrees(west, south, east, north)
+    const sphere = Cesium.BoundingSphere.fromRectangle3D(rect, Cesium.Ellipsoid.WGS84, 0)
+    const range = Math.max(cfg.camera_height || 0, sphere.radius * 2.1)
+    viewer.camera.flyToBoundingSphere(sphere, {
+      offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-55), range),
+      duration: 2.2
+    })
+    return
+  }
+
   const [lon, lat] = cfg.center
   viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(lon, lat - cfg.camera_height / 220000, cfg.camera_height),
+    destination: Cesium.Cartesian3.fromDegrees(lon, lat, cfg.camera_height),
     orientation: { heading: 0, pitch: Cesium.Math.toRadians(-38), roll: 0 },
     duration: 2.2
   })
