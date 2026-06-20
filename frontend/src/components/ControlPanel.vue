@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <aside class="panel glass">
     <nav class="nav">
       <button v-for="m in modules" :key="m.key" class="nav-btn"
@@ -13,10 +13,22 @@
       <h4 class="m-title">{{ current.icon }} {{ current.label }}</h4>
       <p class="desc">{{ current.desc }}</p>
 
-      <!-- 底图 / 白模 -->
+            <!-- 底图 / 白模 -->
       <section v-if="active === 'buildings'">
-        <button class="btn" @click="$emit('toggle-poi')">🅿 显示 / 隐藏 POI</button>
-        <button class="btn" @click="$emit('toggle-height')">🏙 建筑高度 / 天际线着色</button>
+        <div class="seg">
+          <button class="btn sm" @click="$emit('toggle-poi')">🅿 POI 显隐</button>
+          <button class="btn sm" @click="$emit('toggle-height')">🏙 高度着色</button>
+        </div>
+        <div class="seg">
+          <button class="btn sm" :class="{ active: measureOn }" @click="$emit('toggle-measure')">📏 测距</button>
+          <button class="btn sm" :class="{ active: highlightOn }" @click="$emit('toggle-highlight')">🔍 建筑高亮</button>
+        </div>
+        <label class="sub">相机预设</label>
+        <div class="seg">
+          <button class="btn sm" @click="$emit('camera-preset', 'topDown')">⬆ 俯瞰</button>
+          <button class="btn sm" @click="$emit('camera-preset', 'birdEye')">🦅 鸟瞰</button>
+          <button class="btn sm" @click="$emit('camera-preset', 'streetLevel')">🏠 街景</button>
+        </div>
         <div class="param">
           <label>日照时刻：<b>{{ hour.toFixed(1) }}:00</b></label>
           <input type="range" min="0" max="24" step="0.1" v-model.number="hour" @input="emitSun" />
@@ -24,11 +36,10 @@
           <label class="chk"><input type="checkbox" v-model="shadows" @change="$emit('shadows', shadows)" /> 显示日照阴影（建筑投影）</label>
           <label class="chk"><input type="checkbox" :checked="terrainOn" @change="$emit('terrain', $event.target.checked)" /> 显示三维地形起伏（街道底图建议关闭）</label>
         </div>
-        <p class="tip">提示：拖动滑块连续观察光照变化；"日照阴影"默认关闭——开启后建筑会投下随时间移动的阴影
-          （大范围俯视时阴影可能偏长，建议放大到街区观察）。</p>
+        <p class="tip">提示：拖动滑块连续观察光照变化；相机预设快速切换视点；测距工具左键加点、双击完成。</p>
       </section>
 
-      <!-- 价值评估 -->
+<!-- 价值评估 -->
       <section v-if="active === 'value'">
         <div class="weights">
           <label class="sub">各类设施权重系数（影响地段价值，可调）</label>
@@ -58,10 +69,12 @@
           </select>
           <label>价值阈值：<b>{{ minScore }}</b>（仅保留 ≥ 此分的地块）</label>
           <input type="range" min="40" max="95" step="1" v-model.number="minScore" />
+          <label>网格分辨率：<b>{{ siteRes }} × {{ siteRes }}</b>（越大越精细、计算越慢）</label>
+          <input type="range" min="24" max="96" step="4" v-model.number="siteRes" />
           <label>仅取分数最高的 K 个（留空=全部）</label>
           <input type="text" v-model="topK" placeholder="如 10" />
         </div>
-        <button class="btn primary" @click="emitRun('runSite', { minScore, topK: topK ? +topK : null, weights: siteWeights })">▶ 运行选址</button>
+        <button class="btn primary" @click="emitRun('runSite', { minScore, topK: topK ? +topK : null, weights: siteWeights, resolution: siteRes })">▶ 运行选址</button>
         <p class="tip">选址=价值评估的反向筛选。选「重点设施」可按类型侧重，如学区房选「学校」、商铺选「商业区」。</p>
       </section>
 
@@ -105,9 +118,19 @@
 
       <!-- 热点分析 -->
       <section v-if="active === 'hotspot'">
-        <button class="btn primary" @click="emitRun('runHotspot')">▶ 运行热点分析</button>
-        <p class="tip">先算价值网格，再做 Moran's I（全局自相关）与 Getis-Ord Gi*（局部热点），
-          识别价值的高值簇（热点）与低值簇（冷点）。</p>
+        <div class="param">
+          <label>统计对象</label>
+          <select class="select" v-model="hotspotAttr">
+            <option value="score">综合价值</option>
+            <option v-for="(cn, key) in poiCn" :key="key" :value="key">{{ cn }}邻近度</option>
+          </select>
+          <label>网格分辨率：<b>{{ hotspotRes }} × {{ hotspotRes }}</b>（越大越精细、计算越慢）</label>
+          <input type="range" min="24" max="96" step="4" v-model.number="hotspotRes" />
+          <label>邻居数 K：<b>{{ hotspotK }}</b></label>
+          <input type="range" min="4" max="24" step="2" v-model.number="hotspotK" />
+        </div>
+        <button class="btn primary" @click="emitRun('runHotspot', { weights: { ...weights }, resolution: hotspotRes, attr: hotspotAttr, k: hotspotK })">▶ 运行热点分析</button>
+        <p class="tip">可分析综合价值，也可单独看学校、医院、商业区等设施邻近度的空间聚集。</p>
       </section>
 
       <!-- 服务区 -->
@@ -147,23 +170,31 @@
           「涨水过程」按帧播放水位逐渐升高的淹没扩张。默认内置样例水系，运行 fetch_data.py 后用真实水系。</p>
       </section>
 
-      <!-- 视域分析 -->
+            <!-- 视域分析 -->
       <section v-if="active === 'viewshed'">
         <div class="pickrow">
-          <button class="btn sm" :class="{ active: pendingPick === 'observer' }" @click="$emit('pick', 'observer')">选观察点</button>
+          <button class="btn sm" :class="{ active: pendingPick === 'observer' }" @click="$emit('pick', 'observer')">👁 选观察点</button>
           <span class="coord">{{ fmt(picks.observer) }}</span>
         </div>
         <div class="param">
-          <label>观察高度：<b>{{ eyeHeight }} m</b>（模拟楼层 / 瞭望高度）</label>
-          <input type="range" min="2" max="200" step="2" v-model.number="eyeHeight" />
-          <label>分析半径：<b>{{ radius }} m</b></label>
-          <input type="range" min="200" max="1500" step="50" v-model.number="radius" />
+          <label>观察高度（离地）：<b>{{ eyeHeight }} m</b></label>
+          <input type="range" min="5" max="200" step="1" v-model.number="eyeHeight" />
+          <label>分析半径：<b>{{ viewRadius }} m</b></label>
+          <input type="range" min="200" max="3000" step="50" v-model.number="viewRadius" />
+          <label>方位采样数：<b>{{ azimuthSamples }}</b></label>
+          <input type="range" min="24" max="192" step="12" v-model.number="azimuthSamples" />
+          <label class="chk"><input type="checkbox" v-model="showArea" /> 显示视域覆盖区域面</label>
         </div>
-        <button class="btn primary" :disabled="!picks.observer" @click="emitRun('runViewshed', { eyeHeight, radius })">▶ 运行三维视域</button>
+        <button class="btn primary" :disabled="!picks.observer" @click="emitRun('runViewshed', { eyeHeight, radius: viewRadius, azimuths: azimuthSamples, showArea })">▶ 运行视域分析</button>
         <p v-if="!picks.observer" class="hint-inline">请先选观察点</p>
-        <p class="tip">按"方位×俯仰"发射三维射线，依建筑高度判断遮挡：绿色可视、红色被挡。
-          调高观察高度可看到更广视域。</p>
+        <div class="divider" style="margin: 8px 0"></div>
+        <div class="seg">
+          <button class="btn sm" :disabled="!picks.observer" @click="emitRun('runSkyline', { eyeHeight })">🌇 天际线分析</button>
+          <button class="btn sm" :disabled="!picks.observer" @click="emitRun('runViewshed', { eyeHeight, radius: viewRadius, azimuths: azimuthSamples, showArea })">🔄 更新视域</button>
+        </div>
+        <p class="tip">从观察点按方位×俯仰角发射射线，检测建筑地形遮挡。绿=可视、红=被挡。天际线显示水平方向建筑轮廓。</p>
       </section>
+
     </div>
 
     <div class="footer">
@@ -186,7 +217,7 @@ export default {
       hour: 9, darkNight: true, shadows: true,
       weights: { ...DEFAULT_WEIGHTS },
       minScore: 70, topK: '', optimize: 'time', siteFocus: '',
-      bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, floodRes: 100,
+      bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, siteRes: 48, hotspotRes: 48, hotspotK: 8, hotspotAttr: 'score', floodRes: 100,
       eyeHeight: 30, radius: 600,
       routeMode: 'drive', isoMode: 'drive',
       modes: [{ v: 'drive', t: '🚗 驾车' }, { v: 'cycle', t: '🚲 骑行' }, { v: 'walk', t: '🚶 步行' }, { v: 'transit', t: '🚌 公交' }],
@@ -198,7 +229,7 @@ export default {
         { key: 'hotspot', icon: '🔥', label: '热点分析', desc: '空间自相关（Moran\'s I）+ 热点（Getis-Ord Gi*），识别价值聚集格局。' },
         { key: 'iso', icon: '⏱', label: '服务区', desc: '从设施点出发 N 分钟可达范围（等时圈），评估服务覆盖能力。' },
         { key: 'flood', icon: '🌊', label: '洪水淹没', desc: '从真实水系起淹、按地形连通扩散的洪水模拟，可与撤离联动。' },
-        { key: 'viewshed', icon: '👁', label: '视域分析', desc: '考虑建筑高度的真三维视域 / 通视分析。' }
+        { key: 'viewshed', icon: '👁', label: '视域分析', desc: '考虑建筑高度的真三维视域 / 通视分析 + 天际线轮廓。' }
       ]
     }
   },
@@ -267,3 +298,6 @@ export default {
 .footer { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .busy { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent); }
 </style>
+
+
+

@@ -25,6 +25,7 @@
 
     <!-- 热点 -->
     <div v-else-if="result.kind === 'hotspot'">
+      <div class="kv"><span>统计对象</span><b>{{ hotspotAttrLabel(result.meta.attr) }}</b></div>
       <div class="kv"><span>Moran's I</span><b>{{ result.meta.moran_I }}</b></div>
       <div class="kv"><span>显著性 p</span><b>{{ result.meta.moran_p ?? '—' }}</b></div>
       <div class="kv"><span>热点 / 冷点</span><b>{{ result.meta.n_hot }} / {{ result.meta.n_cold }}</b></div>
@@ -94,6 +95,18 @@ export default {
     }
   },
   methods: {
+    hotspotAttrLabel(attr) {
+      const labels = {
+        score: '综合价值',
+        scenic: '景点邻近度',
+        commercial: '商业区邻近度',
+        school: '学校邻近度',
+        hospital: '医院邻近度',
+        transit: '公交邻近度',
+        road: '道路邻近度'
+      }
+      return labels[attr] || attr || '综合价值'
+    },
     // 与地图等时圈配色保持一致：按分钟从小到大取色（绿→红）
     isoColor(minutes) {
       const ramp = ['#2ecc71', '#a3e635', '#f1c40f', '#e67e22', '#e74c3c', '#c0392b']

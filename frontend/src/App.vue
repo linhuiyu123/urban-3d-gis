@@ -161,8 +161,8 @@ export default {
       this.lm.clear('hotspot'); this.lm.renderValueGrid(fc)
       this.result = { kind: 'value', meta: fc.meta }
     },
-    async runSite({ minScore, topK, weights }) {
-      const fc = await api.site(this.currentCity, minScore, topK, weights)
+    async runSite({ minScore, topK, weights, resolution }) {
+      const fc = await api.site(this.currentCity, minScore, topK, weights, resolution)
       this.lm.renderValueGrid(fc, 'value')
       this.result = { kind: 'site', meta: fc.meta }
       this.flash(`选址：找到 ${fc.meta.count} 个达标地块`)
@@ -182,8 +182,8 @@ export default {
       this.lm.renderRoute(fc, 'route', '#ff5c7c')
       this.result = { kind: 'evacuate', meta: fc.meta }
     },
-    async runHotspot() {
-      const fc = await api.hotspot(this.currentCity)
+    async runHotspot({ weights, resolution, attr, k } = {}) {
+      const fc = await api.hotspot(this.currentCity, weights, resolution, k, attr)
       this.lm.clear('value'); this.lm.renderHotspot(fc)
       this.result = { kind: 'hotspot', meta: fc.meta }
     },
