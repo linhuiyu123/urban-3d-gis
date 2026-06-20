@@ -22,7 +22,19 @@ function heatColor(t, alpha = 0.65) {
   return Cesium.Color.fromBytes(c[0], c[1], c[2], Math.round(alpha * 255))
 }
 
-/** 图层管理器：统一增删具名图层。 */
+// POI 类别 → 图标字符（Unicode 符号，用于 Billboard）
+const POI_ICONS = {
+  scenic: '🏔', commercial: '🏪', school: '🏫',
+  hospital: '🏥', transit: '🚌', road: '🛣'
+}
+
+// POI 类别 → 颜色
+const POI_COLORS = {
+  scenic: '#7cf6c8', commercial: '#ff9d5c', school: '#ffe07c',
+  hospital: '#ff5c7c', transit: '#4da3ff', road: '#9aa7c7'
+}
+
+/** 图层管理器：统一增删具名图层。*/
 export class LayerManager {
   constructor(viewer) {
     this.viewer = viewer
@@ -40,7 +52,7 @@ export class LayerManager {
   setVisible(name, v) { if (this.sources.has(name)) this.sources.get(name).show = v }
   clearAll() { this.sources.forEach(ds => ds.entities.removeAll()) }
 
-  /** 价值评估 / 选址：网格按分数热力着色，并按分数轻微抬升形成三维价值面。 */
+  /** 价值评估 / 选址：网格按分数热度着色，贴合 Cesium 球体/地形表面显示。*/
   renderValueGrid(fc, name = 'value') {
     this.clear(name)
     const ds = this._ds(name)
@@ -50,9 +62,8 @@ export class LayerManager {
       ds.entities.add({
         polygon: {
           hierarchy: Cesium.Cartesian3.fromDegreesArray(ring),
-          material: heatColor(score / 100, 0.6),
-          extrudedHeight: 20 + score * 3,
-          height: 0,
+          material: heatColor(score / 100, 0.38),
+          classificationType: Cesium.ClassificationType.TERRAIN,
           outline: false
         },
         properties: { score, detail: f.properties.detail }
@@ -60,13 +71,13 @@ export class LayerManager {
     }
   }
 
-  /** 热点分析：按 hot/cold/none 着色（红=热点，蓝=冷点，灰=不显著）。 */
+  /** 热点分析：按 hot/cold/none 着色（红=热点，蓝=冷点，灰=不显著）。*/
   renderHotspot(fc, name = 'hotspot') {
     this.clear(name)
     const ds = this._ds(name)
-    const colorOf = (c) => c === 'hot' ? Cesium.Color.fromBytes(240, 70, 90, 170)
-      : c === 'cold' ? Cesium.Color.fromBytes(70, 130, 240, 170)
-        : Cesium.Color.fromBytes(140, 150, 170, 70)
+    const colorOf = (c) => c === 'hot' ? Cesium.Color.fromBytes(240, 70, 90, 115)
+      : c === 'cold' ? Cesium.Color.fromBytes(70, 130, 240, 115)
+        : Cesium.Color.fromBytes(140, 150, 170, 35)
     for (const f of fc.features) {
       const ring = f.geometry.coordinates[0].flat()
       ds.entities.add({
@@ -80,26 +91,48 @@ export class LayerManager {
     }
   }
 
-  /** POI 点：按类别用不同颜色的圆点 + 标签。 */
+  /**
+   * POI 点：按类别用不同颜色的圆点 + 图标标签 + 可点击。
+   * @param {Object} fc       GeoJSON FeatureCollection
+   * @param {Object} poiCn    POI 类别中文名映射
+   * @param {string} name     图层名（默认 'pois'）
+   */
   renderPois(fc, poiCn, name = 'pois') {
     this.clear(name)
     const ds = this._ds(name)
-    const palette = {
-      scenic: '#7cf6c8', commercial: '#ff9d5c', school: '#ffe07c',
-      hospital: '#ff5c7c', transit: '#4da3ff', road: '#9aa7c7'
-    }
     for (const f of fc.features) {
       const cat = f.properties.category
       const [lon, lat] = f.geometry.coordinates
+      const colorHex = POI_COLORS[cat] || '#fff'
+      const icon = POI_ICONS[cat] || '📍'
+      const cnLabel = (poiCn || {})[cat] || cat
+
+      // 圆点标记
       ds.entities.add({
         position: Cesium.Cartesian3.fromDegrees(lon, lat, 0),
         point: {
-          pixelSize: 9, color: Cesium.Color.fromCssColorString(palette[cat] || '#fff'),
+          pixelSize: 9, color: Cesium.Color.fromCssColorString(colorHex),
           outlineColor: Cesium.Color.BLACK, outlineWidth: 1,
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY
         },
-        properties: { category: cat, name: f.properties.name, cn: (poiCn || {})[cat] }
+        properties: { category: cat, name: f.properties.name, cn: cnLabel }
+      })
+
+      // 图标标签
+      ds.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(lon, lat, 5),
+        label: {
+          text: `${icon} ${f.properties.name || cnLabel}`,
+          font: '11px sans-serif',
+          fillColor: Cesium.Color.WHITE,
+          showBackground: true,
+          backgroundColor: Cesium.Color.fromCssColorString(colorHex).withAlpha(0.75),
+          backgroundPadding: new Cesium.Cartesian2(5, 3),
+          pixelOffset: new Cesium.Cartesian2(12, -6),
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY
+        }
       })
     }
   }
@@ -107,7 +140,7 @@ export class LayerManager {
   /**
    * 路径（通勤 / 撤离）：贴地折线 + 端点。
    * 高对比配色 + 黑色描边，确保在影像/街道任何底图上都醒目；多条备选各用不同颜色，
-   * 默认高亮第 0 条，可调用 highlightRoute(i) 切换高亮。
+   * 默认高亮第 0 条，可调用 highlightRoute(i) 切换高亮。公交/地铁按分段类型上色。
    */
   renderRoute(fc, name = 'route', color = '#4da3ff') {
     this.clear(name)
@@ -197,7 +230,7 @@ export class LayerManager {
     }
   }
 
-  /** 服务区 / 等时圈：每个时间档用分明的“近→远”配色（绿→黄→橙→红），形成清晰环带。 */
+  /** 服务区 / 等时圈：每个时间档用分明的"近→远"配色（绿→黄→橙→红），形成清晰环带；保留水体孔洞。*/
   renderIsochrone(fc, name = 'iso') {
     this.clear(name)
     const ds = this._ds(name)
@@ -236,7 +269,7 @@ export class LayerManager {
     }
   }
 
-  /** 洪水淹没：单一平滑水面，贴地铺设（淹没"footprint"），地形开/关都正确对齐。 */
+  /** 洪水淹没：单一平滑水面，贴地铺设（淹没"footprint"），地形开/关都正确对齐。*/
   renderFlood(result, name = 'flood') {
     this.clear(name)
     const ds = this._ds(name)
@@ -248,7 +281,7 @@ export class LayerManager {
           polygon: {
             hierarchy: Cesium.Cartesian3.fromDegreesArray(ring.flat()),
             material: Cesium.Color.fromBytes(40, 130, 220, 150),
-            classificationType: Cesium.ClassificationType.TERRAIN,   // 贴地，避免水面悬空/入地
+            classificationType: Cesium.ClassificationType.TERRAIN,
             outline: true, outlineColor: Cesium.Color.fromBytes(120, 200, 255, 220)
           },
           properties: { water_level: level }
@@ -257,25 +290,45 @@ export class LayerManager {
     }
   }
 
-  /** 在地图上放置醒目的选点标记（立柱 + 顶点 + 标签）。 */
-  marker(key, lonlat, label, color = '#ffd24d') {
+  // ═══════════════════════════════════════════════════════════
+  //  标记系统
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * 在地图上放置醒目的选点标记（立柱 + 顶点 + 标签）。
+   * 同一 key 的旧标记自动移除。
+   *
+   * @param {string} key       唯一标识
+   * @param {[number,number]} lonlat 经纬度
+   * @param {string} label     标签文字
+   * @param {string} color     颜色（CSS），默认 '#ffd24d'
+   * @param {Object} opts      可选配置
+   * @param {number} opts.height 标记高度（米），默认 120
+   * @param {number} opts.pixelSize 顶点大小，默认 9
+   */
+  marker(key, lonlat, label, color = '#ffd24d', opts = {}) {
+    const { height = 120, pixelSize = 9 } = opts
     const ds = this._ds('picks')
+    // 移除同 key 旧标记
     ds.entities.values.filter(e => e.properties?.key?.getValue() === key)
       .forEach(e => ds.entities.remove(e))
     const [lon, lat] = lonlat
     const c = Cesium.Color.fromCssColorString(color)
+
+    // 立柱（锥形：底部宽→顶部窄）
     ds.entities.add({
-      position: Cesium.Cartesian3.fromDegrees(lon, lat, 60),
-      cylinder: { length: 120, topRadius: 0, bottomRadius: 12, material: c.withAlpha(0.85),
+      position: Cesium.Cartesian3.fromDegrees(lon, lat, height / 2),
+      cylinder: { length: height, topRadius: 1, bottomRadius: 10, material: c.withAlpha(0.7),
         heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND },
       properties: { key }
     })
+    // 顶点
     ds.entities.add({
-      position: Cesium.Cartesian3.fromDegrees(lon, lat, 130),
-      point: { pixelSize: 9, color: c, outlineColor: Cesium.Color.BLACK, outlineWidth: 1,
+      position: Cesium.Cartesian3.fromDegrees(lon, lat, height + 5),
+      point: { pixelSize, color: c, outlineColor: Cesium.Color.BLACK, outlineWidth: 1,
         heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
         disableDepthTestDistance: Number.POSITIVE_INFINITY },
-      label: { text: label, font: 'bold 13px sans-serif', fillColor: Cesium.Color.WHITE,
+      label: { text: label, font: 'bold 12px sans-serif', fillColor: Cesium.Color.WHITE,
         showBackground: true, backgroundColor: c.withAlpha(0.9),
         backgroundPadding: new Cesium.Cartesian2(7, 4),
         pixelOffset: new Cesium.Cartesian2(0, -14),
@@ -284,14 +337,70 @@ export class LayerManager {
       properties: { key }
     })
   }
+
+  /** 清除指定 key 的标记。 */
   clearMarker(key) {
     const ds = this._ds('picks')
     ds.entities.values.filter(e => e.properties?.key?.getValue() === key)
       .forEach(e => ds.entities.remove(e))
   }
+
+  /** 清除所有标记。 */
+  clearAllMarkers() {
+    this.clear('picks')
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  视域/天际线辅助图层
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * 渲染视域覆盖区域（半透明面）。
+   * @param {Array<{lon:number,lat:number}>} ring 边界点（按方位角排序）
+   * @param {string} name 图层名
+   */
+  renderCoverageArea(ring, name = 'coverage') {
+    this.clear(name)
+    const ds = this._ds(name)
+    if (!ring || ring.length < 3) return
+    const flat = ring.flatMap(p => [p.lon, p.lat])
+    // 闭合
+    flat.push(flat[0], flat[1])
+    ds.entities.add({
+      polygon: {
+        hierarchy: Cesium.Cartesian3.fromDegreesArray(flat),
+        material: Cesium.Color.fromBytes(120, 246, 200, 50),
+        outline: true,
+        outlineColor: Cesium.Color.fromBytes(120, 246, 200, 160),
+        outlineWidth: 1.5,
+        classificationType: Cesium.ClassificationType.TERRAIN
+      }
+    })
+  }
+
+  /**
+   * 清除指定图层并渲染折线（通用工具）。
+   */
+  renderPolyline(name, positions, color, width = 2, dashed = false) {
+    this.clear(name)
+    const ds = this._ds(name)
+    if (!positions || positions.length < 2) return
+    const c = Cesium.Color.fromCssColorString(color)
+    const material = dashed
+      ? new Cesium.PolylineDashMaterialProperty({ color: c.withAlpha(0.85), dashLength: 12 })
+      : c.withAlpha(0.85)
+    ds.entities.add({
+      polyline: {
+        positions: positions.map(p => Cesium.Cartesian3.fromDegrees(p[0], p[1], p[2] || 0)),
+        width,
+        material,
+        clampToGround: false
+      }
+    })
+  }
 }
 
-/** 取出 Polygon / MultiPolygon 的所有外环坐标数组。 */
+/** 取出 Polygon / MultiPolygon 的所有外环坐标数组。*/
 function ringsOf(geom) {
   if (!geom) return []
   if (geom.type === 'Polygon') return [geom.coordinates[0]]

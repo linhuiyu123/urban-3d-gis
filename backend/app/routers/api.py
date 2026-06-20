@@ -70,6 +70,7 @@ class HotspotReq(BaseModel):
     weights: dict[str, float] | None = None
     resolution: int = Field(48, ge=20, le=100)
     k: int = Field(8, ge=2, le=32)
+    z_threshold: float = Field(1.65, ge=1.0, le=2.58)
     attr: Literal[
         "score",
         "scenic", "commercial", "school", "hospital", "transit", "road",
@@ -176,7 +177,7 @@ def post_route_amap(req: AmapRouteReq):
 def post_hotspot(req: HotspotReq):
     _check_city(req.city)
     grid = value.assess_value(req.city, req.weights, req.resolution)
-    return stats.hotspot(grid, attr=req.attr, k=req.k)
+    return stats.hotspot(grid, attr=req.attr, k=req.k, z_threshold=req.z_threshold)
 
 
 # ---------- 服务区 / 等时圈 ----------

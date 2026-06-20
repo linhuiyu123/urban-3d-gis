@@ -1,10 +1,10 @@
-"""
+﻿"""
 数据加载层。
 
-负责把 data/ 下的 GeoJSON（POI、路网、避难场所等）读入内存，
+负责把 data/ 下的 GeoJSON（POI、路网、避难场所、水体）读入内存，
 并按城市 / POI 类别建立索引，供各分析引擎调用。
 
-为了避免每次请求都重新读盘，这里做了简单的内存缓存。
+为避免每次请求都重新读盘，做了内存缓存。
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .config import DATA_DIR
+from .config import DATA_DIR, CITIES
 from . import sample_data
 
 # POI 的六大类别（与价值评估、AI 助手中的语义一一对应）
@@ -43,21 +43,20 @@ def _load_or_generate(city: str, fname: str, kind: str) -> dict[str, Any]:
     优先读取磁盘上的真实 GeoJSON；若文件不存在**或为空**，则调用样例数据生成器
     程序化生成（离线开箱即用）。kind ∈ {pois, roads, shelters, water}。
 
-    关键：磁盘文件“存在但 0 要素”也要回退样例。常见于抓取脚本在 Overpass 被限流/失败时
-    写入了空的 FeatureCollection（如国内访问失败）——若仍直接采用，会导致 POI/水系整层为空，
-    连带价值评估全 0、选址 0 个、热点全不显著、洪水退化成无水体的高程 blob。
+    磁盘文件"存在但 0 要素"也要回退样例。常见场景：抓取脚本受限流/失败
+    写入空 FeatureCollection——若直接采用，会导致整层为空。
     """
     path = DATA_DIR / city / fname
     if path.exists():
         fc = _read_geojson(path)
-        if fc.get("features"):                 # 仅当非空才使用磁盘数据
+        if fc.get("features"):
             return fc
     return sample_data.generate_all(city)[kind]
 
 
 @lru_cache(maxsize=8)
 def load_pois(city: str) -> dict[str, Any]:
-    """加载某城市的全部 POI（一个 FeatureCollection，properties.category 标明类别）。"""
+    """加载某城市的全部 POI（FeatureCollection，properties.category 标明类别）。"""
     return _load_or_generate(city, "pois.geojson", "pois")
 
 
@@ -91,3 +90,43 @@ def clear_cache() -> None:
     load_roads.cache_clear()
     load_shelters.cache_clear()
     load_water.cache_clear()
+
+
+def get_data_stats(city: str) -> dict:
+    """
+    返回某城市当前数据统计摘要（便于前端调试/监控）。
+    包含各层要素数、数据来源（真实/样例）、POI 分类计数。
+    """
+    stats = {
+        "city": city,
+        "city_name": CITIES.get(city, {}).get("name", city),
+        "layers": {},
+    }
+
+    for name, loader in [("pois", load_pois), ("roads", load_roads),
+                          ("shelters", load_shelters), ("water", load_water)]:
+        fc = loader(city)
+        features = fc.get("features", [])
+        # 判断数据来源（是否从真实文件读取）
+        path = DATA_DIR / city / f"{name}.geojson"
+        source = "disk" if (path.exists() and _read_geojson(path).get("features")) else "sample"
+        layer_info = {
+            "count": len(features),
+            "source": source,
+        }
+        if name == "pois":
+            # POI 分类计数
+            cats = {}
+            for f in features:
+                cat = f["properties"].get("category", "unknown")
+                cats[cat] = cats.get(cat, 0) + 1
+            layer_info["categories"] = cats
+        if name == "roads":
+            kinds = {}
+            for f in features:
+                kind = f["properties"].get("kind", "unknown")
+                kinds[kind] = kinds.get(kind, 0) + 1
+            layer_info["road_types"] = kinds
+        stats["layers"][name] = layer_info
+
+    return stats

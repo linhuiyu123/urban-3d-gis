@@ -1,8 +1,7 @@
-"""
-全局配置。
+﻿"""全局配置。
 
-研究区（AREAS）以"区域 id"为键，杭州提供三档可选范围（主城 / 都市区 / 全域）+ 东京。
-前端可在这些区域间切换；后端所有分析按区域 id 索引 bbox、UTM 带等元数据。
+研究区（AREAS）以"区域 id"为键，杭州三档 + 东京。
+前端可切换研究区；后端按区索引 bbox、UTM、视域默认参数等。
 """
 from __future__ import annotations
 
@@ -56,3 +55,32 @@ AREAS = {
 # 兼容旧引用名
 CITIES = AREAS
 DEFAULT_CITY = "hangzhou_core"
+
+# ── 视域分析默认参数 ──
+VIEWSHED_DEFAULTS = {
+    "eye_height": 30,        # 默认观察高度（米）
+    "radius": 600,           # 默认分析半径（米）
+    "azimuths": 96,          # 方位采样数
+    "pitches": [-8, 0, 8, 18],  # 俯仰角（度）
+    "show_area": True,       # 默认显示覆盖区域面
+}
+
+# ── 日照默认参数 ──
+SUNLIGHT_DEFAULTS = {
+    "hour": 9,               # 默认时刻
+    "dark_night": True,      # 夜间压暗
+    "shadows": True,         # 默认开启阴影
+    "shadow_size": 2048,
+    "shadow_darkness": 0.45,
+    "shadow_max_distance": 5000,
+}
+
+# ── 建筑样式配置 ──
+BUILDING_STYLES = {
+    "white": "#dfe6f2",
+    "height_colors": [
+        (120, "#ff5c7c"), (80, "#ff9d5c"), (45, "#ffe07c"),
+        (20, "#7cf6c8"), (0, "#4da3ff")
+    ],
+    "highlight": "#ffd24d",
+}

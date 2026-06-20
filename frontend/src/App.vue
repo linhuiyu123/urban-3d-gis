@@ -26,6 +26,7 @@
 
     <ControlPanel :poiCn="poiCn" :picks="picks" :busy="busy" :pendingPick="pendingPick" :terrainOn="terrainOn"
       @run="onRun" @pick="startPick" @toggle-poi="togglePoi" @toggle-height="toggleHeight"
+      @toggle-measure="toggleMeasure" @toggle-highlight="toggleHighlight" @camera-preset="setCameraPreset"
       @sun="setSun" @shadows="toggleShadows" @terrain="setTerrainOn" @clear="clearAll" @clear-vias="clearVias" />
 
     <ResultPanel :result="result" @highlight="onHighlightRoute" />
@@ -43,10 +44,11 @@ import ResultPanel from './components/ResultPanel.vue'
 import { api } from './api'
 import {
   createViewer, loadOsmBuildings, flyToCity, onMapClick,
-  styleBuildingsByHeight, setSunlight, setBasemap, setShadows, setTerrain
+  styleBuildingsByHeight, setSunlight, setBasemap, setShadows, setTerrain,
+  enableBuildingHighlight, createMeasureTool, cameraPreset as applyCameraPreset
 } from './cesium/viewer'
 import { LayerManager } from './cesium/layers'
-import { viewshed } from './cesium/analysis3d'
+import { viewshed, skylineFromObserver, renderSkylineLayer } from './cesium/analysis3d'
 
 // 选点种类 → 标记样式
 const PICK_META = {
@@ -67,7 +69,8 @@ export default {
       heightStyle: false, poiShown: false, basemap: 'satellite_labels', darkNight: true, sunHour: 9, shadowsOn: true, terrainOn: true,
       busy: false, hint: '', result: null, pendingPick: null,
       picks: { routeStart: null, routeEnd: null, evacStart: null, isoCenter: null, observer: null, lastClick: null, routeVias: [] },
-      floodHazard: null, _floodTimer: null
+      floodHazard: null, _floodTimer: null,
+      measureTool: null, measureOn: false, highlightHandler: null, highlightOn: false
     }
   },
   async mounted() {
@@ -147,8 +150,34 @@ export default {
       setSunlight(this.viewer, hour, darkNight)
     },
     toggleShadows(on) { this.shadowsOn = on; setShadows(this.viewer, on) },
+    toggleMeasure(on) {
+      if (!this.measureTool) this.measureTool = createMeasureTool(this.viewer, this.lm)
+      this.measureOn = on
+      if (on) {
+        this.measureTool.enable()
+        this.flash('测距已开启：左键加点，双击完成')
+      } else {
+        this.measureTool.disable()
+        this.flash('测距已关闭')
+      }
+    },
+    toggleHighlight(on) {
+      this.highlightOn = on
+      if (on) {
+        if (this.highlightHandler) this.highlightHandler.destroy()
+        this.highlightHandler = enableBuildingHighlight(this.viewer, this.tileset, this.lm)
+        this.flash('建筑高亮已开启：点击建筑高亮，按 Esc 清除')
+      } else {
+        if (this.highlightHandler) { this.highlightHandler.destroy(); this.highlightHandler = null }
+        this.flash('建筑高亮已关闭')
+      }
+    },
+    setCameraPreset(preset) { applyCameraPreset(this.viewer, preset) },
     clearAll() {
-      this._stopFloodAnim(); this.lm.clearAll(); this.result = null; this.floodHazard = null
+      this._stopFloodAnim()
+      if (this.measureTool && this.measureOn) { this.measureTool.disable(); this.measureOn = false }
+      if (this.highlightHandler) { this.highlightHandler.destroy(); this.highlightHandler = null; this.highlightOn = false }
+      this.lm.clearAll(); this.result = null; this.floodHazard = null
       // 清掉所有选点，避免切换城市后用旧坐标算路（含起点/终点/撤离点/中心点/观察点/途径点）
       this.picks = { routeStart: null, routeEnd: null, evacStart: null, isoCenter: null, observer: null, lastClick: null, routeVias: [] }
     },
@@ -168,8 +197,8 @@ export default {
       this.lm.clear('hotspot'); this.lm.renderValueGrid(fc)
       this.result = { kind: 'value', meta: fc.meta }
     },
-    async runSite({ minScore, topK, weights }) {
-      const fc = await api.site(this.currentCity, minScore, topK, weights)
+    async runSite({ minScore, topK, weights, resolution }) {
+      const fc = await api.site(this.currentCity, minScore, topK, weights, resolution)
       this.lm.renderValueGrid(fc, 'value')
       this.result = { kind: 'site', meta: fc.meta }
       this.flash(`选址：找到 ${fc.meta.count} 个达标地块`)
@@ -206,8 +235,8 @@ export default {
       this.lm.renderRoute(fc, 'route', '#ff5c7c')
       this.result = { kind: 'evacuate', meta: fc.meta }
     },
-    async runHotspot() {
-      const fc = await api.hotspot(this.currentCity)
+    async runHotspot({ weights, resolution, attr, k, zThreshold } = {}) {
+      const fc = await api.hotspot(this.currentCity, weights, resolution, k, attr, zThreshold)
       this.lm.clear('value'); this.lm.renderHotspot(fc)
       this.result = { kind: 'hotspot', meta: fc.meta }
     },
@@ -251,11 +280,18 @@ export default {
     },
     _stopFloodAnim() { if (this._floodTimer) { clearInterval(this._floodTimer); this._floodTimer = null } },
     onHighlightRoute(i) { if (this.lm) this.lm.highlightRoute(i) },
-    async runViewshed({ eyeHeight, radius }) {
+    async runViewshed({ eyeHeight, radius, azimuths, showArea } = {}) {
       if (!this.picks.observer) return this.flash('请先在地图选观察点')
       this.flash('三维视域计算中…')
-      const stat = await viewshed(this.viewer, this.lm, this.picks.observer, eyeHeight, radius)
+      const stat = await viewshed(this.viewer, this.lm, this.picks.observer, eyeHeight, radius, { azimuths, showArea })
       this.result = { kind: 'viewshed', meta: stat }
+    },
+    async runSkyline({ eyeHeight } = {}) {
+      if (!this.picks.observer) return this.flash('请先在地图选观察点')
+      this.flash('天际线分析中…')
+      const skyline = await skylineFromObserver(this.viewer, this.picks.observer, eyeHeight)
+      const stat = renderSkylineLayer(this.lm, skyline) || {}
+      this.result = { kind: 'skyline', meta: { ...stat, samples: skyline.length, eyeHeight } }
     },
 
     onAIResult(r) {

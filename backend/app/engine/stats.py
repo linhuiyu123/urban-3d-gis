@@ -116,7 +116,7 @@ def _gistar_manual(vals: np.ndarray, neighbors: list[np.ndarray]) -> np.ndarray:
     return z
 
 
-def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
+def hotspot(fc: dict, attr: str = "score", k: int = 8, z_threshold: float = 1.65) -> dict:
     """
     对输入要素集做 Moran's I + Gi* 热点分析。
 
@@ -156,10 +156,12 @@ def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
     if not np.isfinite(moran_i):
         moran_i = 0.0
 
-    # |z| > 1.96 对应 95% 置信度
+    # |z| >= 1.65 约对应 90% 置信度；|z| >= 1.96 约对应 95% 置信度。
+    # 城市设施邻近度通常是连续缓变面，95% 阈值在小范围演示区容易只剩冷点或全不显著。
+    threshold = float(z_threshold or 1.65)
     out_feats = []
     for f, z in zip(fc["features"], gi_z):
-        cls = "hot" if z > 1.96 else ("cold" if z < -1.96 else "none")
+        cls = "hot" if z >= threshold else ("cold" if z <= -threshold else "none")
         nf = {**f, "properties": {**f["properties"], "gi_z": round(float(z), 3), "hot_class": cls}}
         out_feats.append(nf)
 
@@ -170,13 +172,15 @@ def hotspot(fc: dict, attr: str = "score", k: int = 8) -> dict:
             **fc.get("meta", {}),
             "attr": attr,
             "k": k,
+            "z_threshold": threshold,
+            "confidence": "90%" if threshold < 1.96 else "95%",
             "moran_I": round(moran_i, 4),
             "moran_p": (None if moran_p != moran_p else round(moran_p, 4)),
             "interpretation": ("高值/低值显著空间聚集（正自相关）" if moran_i > 0.1
                                else "趋于随机分布" if abs(moran_i) <= 0.1
                                else "高低值相邻（负自相关）"),
             "engine": engine,
-            "n_hot": int((gi_z > 1.96).sum()),
-            "n_cold": int((gi_z < -1.96).sum()),
+            "n_hot": int((gi_z >= threshold).sum()),
+            "n_cold": int((gi_z <= -threshold).sum()),
         },
     }

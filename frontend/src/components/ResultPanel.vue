@@ -25,6 +25,8 @@
 
     <!-- 热点 -->
     <div v-else-if="result.kind === 'hotspot'">
+      <div class="kv"><span>统计对象</span><b>{{ hotspotAttrLabel(result.meta.attr) }}</b></div>
+      <div class="kv"><span>显著性阈值</span><b>{{ result.meta.confidence || '90%' }} / |z| ≥ {{ result.meta.z_threshold ?? 1.65 }}</b></div>
       <div class="kv"><span>Moran's I</span><b>{{ result.meta.moran_I }}</b></div>
       <div class="kv"><span>显著性 p</span><b>{{ result.meta.moran_p ?? '—' }}</b></div>
       <div class="kv"><span>热点 / 冷点</span><b>{{ result.meta.n_hot }} / {{ result.meta.n_cold }}</b></div>
@@ -102,6 +104,15 @@
         <span><i class="dot" style="background:#ff5c7c"></i>被遮挡</span>
       </div>
     </div>
+
+    <!-- 天际线 -->
+    <div v-else-if="result.kind === 'skyline'">
+      <div class="kv"><span>采样数</span><b>{{ result.meta.samples }}</b></div>
+      <div class="kv"><span>最高仰角</span><b>{{ result.meta.maxElevation?.toFixed ? result.meta.maxElevation.toFixed(1) : result.meta.maxElevation }}°</b></div>
+      <div class="kv"><span>最低仰角</span><b>{{ result.meta.minElevation?.toFixed ? result.meta.minElevation.toFixed(1) : result.meta.minElevation }}°</b></div>
+      <div class="kv"><span>平均仰角</span><b>{{ result.meta.avgElevation }}°</b></div>
+      <p class="note">金色虚线为从观察点计算出的建筑 / 地形天际线轮廓。</p>
+    </div>
   </aside>
 </template>
 
@@ -116,7 +127,7 @@ export default {
       titleMap: {
         value: '地段价值评估', site: '选址分析', hotspot: '热点 / 空间自相关',
         route: '通勤路径', evacuate: '灾害撤离', iso: '服务区 / 等时圈',
-        flood: '洪水淹没模拟', viewshed: '视域分析'
+        flood: '洪水淹没模拟', viewshed: '视域分析', skyline: '天际线分析'
       }
     }
   },
@@ -139,6 +150,19 @@ export default {
     }
   },
   methods: {
+    // 热点统计对象中文名（与 main 的热点模块一致）
+    hotspotAttrLabel(attr) {
+      const labels = {
+        score: '综合价值',
+        scenic: '景点邻近度',
+        commercial: '商业区邻近度',
+        school: '学校邻近度',
+        hospital: '医院邻近度',
+        transit: '公交邻近度',
+        road: '道路邻近度'
+      }
+      return labels[attr] || attr || '综合价值'
+    },
     // 与地图等时圈配色保持一致：按请求档位从小到大取色（绿→红）
     isoColor(minutes) {
       const ramp = ['#2ecc71', '#a3e635', '#f1c40f', '#e67e22', '#e74c3c', '#c0392b']
