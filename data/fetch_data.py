@@ -117,8 +117,13 @@ def fetch_roads(bbox, big: bool):
         cf = '["highway"~"motorway|trunk|primary|secondary"]'
     else:
         cf = '["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified"]'
-    G = ox.graph_from_bbox(bbox[3], bbox[1], bbox[2], bbox[0],
-                           network_type="drive", custom_filter=cf, simplify=True)
+    try:
+        # OSMnx >= 2.0: bbox=(left, bottom, right, top)
+        G = ox.graph_from_bbox(tuple(bbox), network_type="drive", custom_filter=cf, simplify=True)
+    except TypeError:
+        # OSMnx 1.x: graph_from_bbox(north, south, east, west, ...)
+        G = ox.graph_from_bbox(bbox[3], bbox[1], bbox[2], bbox[0],
+                               network_type="drive", custom_filter=cf, simplify=True)
     feats = []
     for u, v, d in G.edges(data=True):
         geom = d.get("geometry")

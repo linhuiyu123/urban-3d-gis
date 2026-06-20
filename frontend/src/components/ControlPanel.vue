@@ -128,8 +128,13 @@
           <input type="range" min="24" max="96" step="4" v-model.number="hotspotRes" />
           <label>邻居数 K：<b>{{ hotspotK }}</b></label>
           <input type="range" min="4" max="24" step="2" v-model.number="hotspotK" />
+          <label>显著性阈值</label>
+          <select class="select" v-model.number="hotspotZ">
+            <option :value="1.65">90%（演示更清晰）</option>
+            <option :value="1.96">95%（更严格）</option>
+          </select>
         </div>
-        <button class="btn primary" @click="emitRun('runHotspot', { weights: { ...weights }, resolution: hotspotRes, attr: hotspotAttr, k: hotspotK })">▶ 运行热点分析</button>
+        <button class="btn primary" @click="emitRun('runHotspot', { weights: { ...weights }, resolution: hotspotRes, attr: hotspotAttr, k: hotspotK, zThreshold: hotspotZ })">▶ 运行热点分析</button>
         <p class="tip">可分析综合价值，也可单独看学校、医院、商业区等设施邻近度的空间聚集。</p>
       </section>
 
@@ -217,7 +222,7 @@ export default {
       hour: 9, darkNight: true, shadows: true,
       weights: { ...DEFAULT_WEIGHTS },
       minScore: 70, topK: '', optimize: 'time', siteFocus: '',
-      bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, siteRes: 48, hotspotRes: 48, hotspotK: 8, hotspotAttr: 'score', floodRes: 100,
+      bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, siteRes: 48, hotspotRes: 48, hotspotK: 8, hotspotAttr: 'score', hotspotZ: 1.65, floodRes: 100,
       eyeHeight: 30, radius: 600,
       routeMode: 'drive', isoMode: 'drive',
       modes: [{ v: 'drive', t: '🚗 驾车' }, { v: 'cycle', t: '🚲 骑行' }, { v: 'walk', t: '🚶 步行' }, { v: 'transit', t: '🚌 公交' }],
@@ -298,6 +303,5 @@ export default {
 .footer { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .busy { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent); }
 </style>
-
 
 

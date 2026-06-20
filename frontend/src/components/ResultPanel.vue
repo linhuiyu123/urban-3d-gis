@@ -26,6 +26,7 @@
     <!-- 热点 -->
     <div v-else-if="result.kind === 'hotspot'">
       <div class="kv"><span>统计对象</span><b>{{ hotspotAttrLabel(result.meta.attr) }}</b></div>
+      <div class="kv"><span>显著性阈值</span><b>{{ result.meta.confidence || '90%' }} / |z| ≥ {{ result.meta.z_threshold ?? 1.65 }}</b></div>
       <div class="kv"><span>Moran's I</span><b>{{ result.meta.moran_I }}</b></div>
       <div class="kv"><span>显著性 p</span><b>{{ result.meta.moran_p ?? '—' }}</b></div>
       <div class="kv"><span>热点 / 冷点</span><b>{{ result.meta.n_hot }} / {{ result.meta.n_cold }}</b></div>
