@@ -69,10 +69,12 @@
           </select>
           <label>价值阈值：<b>{{ minScore }}</b>（仅保留 ≥ 此分的地块）</label>
           <input type="range" min="40" max="95" step="1" v-model.number="minScore" />
+          <label>网格分辨率：<b>{{ siteRes }} × {{ siteRes }}</b>（越大越精细、计算越慢）</label>
+          <input type="range" min="24" max="96" step="4" v-model.number="siteRes" />
           <label>仅取分数最高的 K 个（留空=全部）</label>
           <input type="text" v-model="topK" placeholder="如 10" />
         </div>
-        <button class="btn primary" @click="emitRun('runSite', { minScore, topK: topK ? +topK : null, weights: siteWeights })">▶ 运行选址</button>
+        <button class="btn primary" @click="emitRun('runSite', { minScore, topK: topK ? +topK : null, weights: siteWeights, resolution: siteRes })">▶ 运行选址</button>
         <p class="tip">选址=价值评估的反向筛选。选「重点设施」可按类型侧重，如学区房选「学校」、商铺选「商业区」。</p>
       </section>
 
@@ -116,9 +118,19 @@
 
       <!-- 热点分析 -->
       <section v-if="active === 'hotspot'">
-        <button class="btn primary" @click="emitRun('runHotspot')">▶ 运行热点分析</button>
-        <p class="tip">先算价值网格，再做 Moran's I（全局自相关）与 Getis-Ord Gi*（局部热点），
-          识别价值的高值簇（热点）与低值簇（冷点）。</p>
+        <div class="param">
+          <label>统计对象</label>
+          <select class="select" v-model="hotspotAttr">
+            <option value="score">综合价值</option>
+            <option v-for="(cn, key) in poiCn" :key="key" :value="key">{{ cn }}邻近度</option>
+          </select>
+          <label>网格分辨率：<b>{{ hotspotRes }} × {{ hotspotRes }}</b>（越大越精细、计算越慢）</label>
+          <input type="range" min="24" max="96" step="4" v-model.number="hotspotRes" />
+          <label>邻居数 K：<b>{{ hotspotK }}</b></label>
+          <input type="range" min="4" max="24" step="2" v-model.number="hotspotK" />
+        </div>
+        <button class="btn primary" @click="emitRun('runHotspot', { weights: { ...weights }, resolution: hotspotRes, attr: hotspotAttr, k: hotspotK })">▶ 运行热点分析</button>
+        <p class="tip">可分析综合价值，也可单独看学校、医院、商业区等设施邻近度的空间聚集。</p>
       </section>
 
       <!-- 服务区 -->
@@ -205,7 +217,7 @@ export default {
       hour: 9, darkNight: true, shadows: true,
       weights: { ...DEFAULT_WEIGHTS },
       minScore: 70, topK: '', optimize: 'time', siteFocus: '',
-      bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, floodRes: 100,
+      bands: [5, 10, 15], waterLevel: 6, reroute: true, valueRes: 48, siteRes: 48, hotspotRes: 48, hotspotK: 8, hotspotAttr: 'score', floodRes: 100,
       eyeHeight: 30, radius: 600,
       routeMode: 'drive', isoMode: 'drive',
       modes: [{ v: 'drive', t: '🚗 驾车' }, { v: 'cycle', t: '🚲 骑行' }, { v: 'walk', t: '🚶 步行' }, { v: 'transit', t: '🚌 公交' }],
@@ -286,7 +298,6 @@ export default {
 .footer { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .busy { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent); }
 </style>
-
 
 
 

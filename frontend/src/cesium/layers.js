@@ -52,7 +52,7 @@ export class LayerManager {
   setVisible(name, v) { if (this.sources.has(name)) this.sources.get(name).show = v }
   clearAll() { this.sources.forEach(ds => ds.entities.removeAll()) }
 
-  /** 价值评估 / 选址：网格按分数热度着色，并按分数轻微抬升形成三维价值面。*/
+  /** 价值评估 / 选址：网格按分数热度着色，贴合 Cesium 球体/地形表面显示。*/
   renderValueGrid(fc, name = 'value') {
     this.clear(name)
     const ds = this._ds(name)
@@ -62,9 +62,8 @@ export class LayerManager {
       ds.entities.add({
         polygon: {
           hierarchy: Cesium.Cartesian3.fromDegreesArray(ring),
-          material: heatColor(score / 100, 0.6),
-          extrudedHeight: 20 + score * 3,
-          height: 0,
+          material: heatColor(score / 100, 0.38),
+          classificationType: Cesium.ClassificationType.TERRAIN,
           outline: false
         },
         properties: { score, detail: f.properties.detail }
@@ -76,9 +75,9 @@ export class LayerManager {
   renderHotspot(fc, name = 'hotspot') {
     this.clear(name)
     const ds = this._ds(name)
-    const colorOf = (c) => c === 'hot' ? Cesium.Color.fromBytes(240, 70, 90, 170)
-      : c === 'cold' ? Cesium.Color.fromBytes(70, 130, 240, 170)
-        : Cesium.Color.fromBytes(140, 150, 170, 70)
+    const colorOf = (c) => c === 'hot' ? Cesium.Color.fromBytes(240, 70, 90, 115)
+      : c === 'cold' ? Cesium.Color.fromBytes(70, 130, 240, 115)
+        : Cesium.Color.fromBytes(140, 150, 170, 35)
     for (const f of fc.features) {
       const ring = f.geometry.coordinates[0].flat()
       ds.entities.add({
