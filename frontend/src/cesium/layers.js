@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 图层渲染：把后端返回的 GeoJSON 结果绘制到 Cesium 场景。
  * 每类结果用一个具名 CustomDataSource 管理，便于独立显隐与清除。
  */
@@ -137,70 +137,70 @@ export class LayerManager {
     }
   }
 
-  /** 路径（通勤 / 撤离）：发光折线 + 端点。*/
+  /**
+   * 路径（通勤 / 撤离）：贴地折线 + 端点。
+   * 高对比配色 + 黑色描边，确保在影像/街道任何底图上都醒目；多条备选各用不同颜色，
+   * 默认高亮第 0 条，可调用 highlightRoute(i) 切换高亮。公交/地铁按分段类型上色。
+   */
   renderRoute(fc, name = 'route', color = '#4da3ff') {
     this.clear(name)
     const ds = this._ds(name)
-    const c = Cesium.Color.fromCssColorString(color)
+    const palette = ['#ff2d95', '#00e0ff', '#ffd400', '#9b5cff']  // 洋红/青/黄/紫，避免与底图相近
+    const lineCount = fc.features.filter(f => f.geometry.type === 'LineString').length
+    const multi = lineCount > 1
+    let li = 0
     for (const f of fc.features) {
       if (f.geometry.type === 'LineString') {
         const coords = f.geometry.coordinates.flatMap(c => [c[0], c[1]])
-        ds.entities.add({
-          polyline: {
-            positions: Cesium.Cartesian3.fromDegreesArray(coords),
-            width: 4, material: c.withAlpha(0.8),
-            clampToGround: true
-          }
-        })
-        // 外发光层
-        ds.entities.add({
-          polyline: {
-            positions: Cesium.Cartesian3.fromDegreesArray(coords),
-            width: 9, material: c.withAlpha(0.22),
-            clampToGround: true
-          }
-        })
-        // 起点
-        if (coords.length >= 2) {
+        const segType = f.properties?.seg_type            // 公交/地铁分段：按类型上色
+        if (segType) {
+          const sc = segType === 'subway' ? '#2d7dff' : segType === 'bus' ? '#ff9d2e' : '#9aa7c7'
           ds.entities.add({
-            position: Cesium.Cartesian3.fromDegrees(coords[0], coords[1], 0),
-            point: { pixelSize: 10, color: Cesium.Color.WHITE, outlineColor: c, outlineWidth: 3,
-              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-              disableDepthTestDistance: Number.POSITIVE_INFINITY }
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray(coords),
+              width: segType === 'walk' ? 5 : 8,
+              material: segType === 'walk'
+                ? new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.fromCssColorString(sc), dashLength: 16 })
+                : new Cesium.PolylineOutlineMaterialProperty({
+                  color: Cesium.Color.fromCssColorString(sc),
+                  outlineColor: Cesium.Color.fromBytes(0, 0, 0, 210), outlineWidth: 2.5
+                }),
+              clampToGround: true
+            },
+            properties: { ...f.properties }
           })
-        }
-        // 终点
-        if (coords.length >= 4) {
-          const n = coords.length
+        } else {
+          // 驾车/自研路线：贴地 + 亮色黑描边；多条备选各取一色、默认高亮第一条、可切换。
+          const idx = li
+          const c = multi ? palette[idx % palette.length] : color
+          const selected = (f.properties?.rank ?? idx) === 0
           ds.entities.add({
-            position: Cesium.Cartesian3.fromDegrees(coords[n - 2], coords[n - 1], 0),
-            point: { pixelSize: 10, color: c, outlineColor: Cesium.Color.WHITE, outlineWidth: 2,
-              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-              disableDepthTestDistance: Number.POSITIVE_INFINITY },
-            label: {
-              text: '终点', font: '12px sans-serif',
-              fillColor: Cesium.Color.WHITE,
-              showBackground: true, backgroundColor: c.withAlpha(0.85),
-              backgroundPadding: new Cesium.Cartesian2(6, 3),
-              pixelOffset: new Cesium.Cartesian2(0, -16),
-              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-              disableDepthTestDistance: Number.POSITIVE_INFINITY
-            }
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray(coords),
+              width: selected ? 9 : 5,
+              material: new Cesium.PolylineOutlineMaterialProperty({
+                color: Cesium.Color.fromCssColorString(c).withAlpha(selected ? 1.0 : 0.6),
+                outlineColor: Cesium.Color.fromBytes(0, 0, 0, 210), outlineWidth: 2.5
+              }),
+              clampToGround: true,
+              zIndex: selected ? 10 : 1
+            },
+            properties: { ...f.properties, _routeIndex: idx, _color: c }
           })
+          li++
         }
-      }
-      // 避难场所点（用于撤离路径）
-      if (f.geometry.type === 'Point') {
+      } else if (f.geometry.type === 'Point') {
         const [lon, lat] = f.geometry.coordinates
-        const isShelter = f.properties.kind === 'shelter'
+        const isShelter = f.properties.type === 'shelter'
         ds.entities.add({
           position: Cesium.Cartesian3.fromDegrees(lon, lat, 0),
-          point: { pixelSize: isShelter ? 11 : 8, color: isShelter ? Cesium.Color.fromBytes(120, 246, 200) : c,
+          billboard: undefined,
+          point: { pixelSize: 14, color: Cesium.Color.fromCssColorString(isShelter ? '#7cf6c8' : '#ffffff'),
             outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
             disableDepthTestDistance: Number.POSITIVE_INFINITY },
           label: isShelter ? {
-            text: '🛖 ' + (f.properties.name || '避难场所'),
+            text: '🛟 ' + (f.properties.name || '避难场所'),
             font: '13px sans-serif', fillColor: Cesium.Color.WHITE,
             showBackground: true, backgroundColor: Cesium.Color.fromBytes(10, 16, 30, 200),
             pixelOffset: new Cesium.Cartesian2(0, -22),
@@ -212,27 +212,60 @@ export class LayerManager {
     }
   }
 
-  /** 服务区 / 等时圈：每个时间档用分明的"近→远"配色（绿→黄→橙→红），形成清晰环带。*/
+  /** 高亮指定序号的备选路线（其余变细变淡），用于结果面板里点击"方案N"切换。 */
+  highlightRoute(index, name = 'route') {
+    const ds = this.sources.get(name)
+    if (!ds) return
+    for (const e of ds.entities.values) {
+      if (!e.polyline || !e.properties || e.properties._routeIndex === undefined) continue
+      const idx = e.properties._routeIndex.getValue()
+      const c = e.properties._color.getValue()
+      const sel = idx === index
+      e.polyline.width = sel ? 9 : 5
+      e.polyline.material = new Cesium.PolylineOutlineMaterialProperty({
+        color: Cesium.Color.fromCssColorString(c).withAlpha(sel ? 1.0 : 0.5),
+        outlineColor: Cesium.Color.fromBytes(0, 0, 0, 210), outlineWidth: 2.5
+      })
+      e.polyline.zIndex = sel ? 10 : 1
+    }
+  }
+
+  /** 服务区 / 等时圈：每个时间档用分明的"近→远"配色（绿→黄→橙→红），形成清晰环带；保留水体孔洞。*/
   renderIsochrone(fc, name = 'iso') {
     this.clear(name)
     const ds = this._ds(name)
+    // 近(分钟少)=绿，远(分钟多)=红；按实际档位排序后取色，区分更明显
     const ramp = ['#2ecc71', '#a3e635', '#f1c40f', '#e67e22', '#e74c3c', '#c0392b']
-    const mins = [...new Set(fc.features.map(f => f.properties.minutes))].sort((a, b) => a - b)
+    // 按"请求的"档位(meta.bands)建立配色刻度，与结果面板一致，避免缺档时错配颜色
+    const reqBands = (fc.meta && fc.meta.bands && fc.meta.bands.length) ? fc.meta.bands : fc.features.map(f => f.properties.minutes)
+    const mins = [...new Set(reqBands)].sort((a, b) => a - b)
     const colorOf = (m) => ramp[Math.min(Math.max(mins.indexOf(m), 0), ramp.length - 1)]
+    // 大档先画、小档后画（叠在上层），让每一档露出独立的环
     const feats = [...fc.features].sort((a, b) => b.properties.minutes - a.properties.minutes)
     for (const f of feats) {
       const m = f.properties.minutes
-      const ring = f.geometry.coordinates[0].flat()
       const c = Cesium.Color.fromCssColorString(colorOf(m))
-      ds.entities.add({
-        polygon: {
-          hierarchy: Cesium.Cartesian3.fromDegreesArray(ring),
-          material: c.withAlpha(0.5),
-          outline: true, outlineColor: c.withAlpha(0.95), outlineWidth: 2,
-          classificationType: Cesium.ClassificationType.TERRAIN
-        },
-        properties: { minutes: m }
-      })
+      for (const poly of polysOf(f.geometry)) {        // 每个多边形：外环 + 孔洞（水面/空地）
+        const outer = Cesium.Cartesian3.fromDegreesArray(poly.outer.flat())
+        const holes = poly.holes.map(h => new Cesium.PolygonHierarchy(Cesium.Cartesian3.fromDegreesArray(h.flat())))
+        ds.entities.add({
+          polygon: {                                   // 贴地填充，保留孔洞（贴地多边形不支持 outline）
+            hierarchy: new Cesium.PolygonHierarchy(outer, holes),
+            material: c.withAlpha(0.45),
+            classificationType: Cesium.ClassificationType.TERRAIN
+          },
+          properties: { minutes: m }
+        })
+        ds.entities.add({                              // 外边界贴地线，消除 outline 警告、环带清晰
+          polyline: { positions: outer, width: 2, material: c.withAlpha(0.95), clampToGround: true },
+          properties: { minutes: m }
+        })
+        for (const h of poly.holes)                    // 孔洞（如西湖）边界也描一圈
+          ds.entities.add({
+            polyline: { positions: Cesium.Cartesian3.fromDegreesArray(h.flat()), width: 1.5, material: c.withAlpha(0.8), clampToGround: true },
+            properties: { minutes: m }
+          })
+      }
     }
   }
 
@@ -372,5 +405,13 @@ function ringsOf(geom) {
   if (!geom) return []
   if (geom.type === 'Polygon') return [geom.coordinates[0]]
   if (geom.type === 'MultiPolygon') return geom.coordinates.map(p => p[0])
+  return []
+}
+
+/** 取出每个多边形的外环与孔洞：{ outer:[[lon,lat]...], holes:[[[lon,lat]...]...] }。 */
+function polysOf(geom) {
+  if (!geom) return []
+  if (geom.type === 'Polygon') return [{ outer: geom.coordinates[0], holes: geom.coordinates.slice(1) }]
+  if (geom.type === 'MultiPolygon') return geom.coordinates.map(p => ({ outer: p[0], holes: p.slice(1) }))
   return []
 }

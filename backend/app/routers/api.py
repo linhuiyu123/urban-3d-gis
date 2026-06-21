@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..config import CITIES, DEFAULT_CITY
 from ..data_loader import load_pois, load_roads, load_shelters, POI_CN
-from ..engine import value, routing, stats, service_area, flood, ai_agent
+from ..engine import value, routing, stats, service_area, flood, ai_agent, amap
 
 router = APIRouter(prefix="/api")
 
@@ -38,17 +38,27 @@ class RouteReq(BaseModel):
     city: str = DEFAULT_CITY
     start: list[float]
     end: list[float]
-    optimize: str = "time"
-    mode: str = "drive"                       # drive/cycle/walk/transit
+    optimize: Literal["time", "length"] = "time"
+    mode: Literal["drive", "cycle", "walk", "transit"] = "drive"
     vias: list[list[float]] | None = None     # 途径点 [[lon,lat],...]
+    alternatives: bool = False                # 返回「最快+最短」两条备选
     hazard: dict | None = None   # 可选 GeoJSON 几何，路径避让
 
 
 class EvacReq(BaseModel):
     city: str = DEFAULT_CITY
     start: list[float]
-    mode: str = "drive"
+    mode: Literal["drive", "cycle", "walk", "transit"] = "drive"
     hazard: dict | None = None
+
+
+class AmapRouteReq(BaseModel):
+    start: list[float]
+    end: list[float]
+    optimize: Literal["time", "length"] = "time"
+    mode: Literal["drive", "walk", "cycle", "transit"] = "drive"
+    vias: list[list[float]] | None = None
+    alternatives: bool = False                 # 驾车时返回多条备选（最快/最短/躲避拥堵）
 
 
 class CityReq(BaseModel):
@@ -73,7 +83,8 @@ class ServiceReq(BaseModel):
     city: str = DEFAULT_CITY
     center: list[float]
     bands: list[float] = [5, 10, 15]
-    mode: str = "drive"
+    mode: Literal["drive", "cycle", "walk", "transit"] = "drive"
+    baidu: bool = False                        # True=用百度批量算路(真实路况,仅国内)，否则离线
 
 
 class FloodReq(BaseModel):
@@ -144,7 +155,8 @@ def post_site(req: SiteReq):
 def post_route(req: RouteReq):
     _check_city(req.city)
     hazard = routing.to_shape(req.hazard)
-    return routing.route(req.city, req.start, req.end, req.optimize, hazard, req.mode, req.vias)
+    return routing.route(req.city, req.start, req.end, req.optimize, hazard,
+                         req.mode, req.vias, req.alternatives)
 
 
 @router.post("/evacuate")
@@ -152,6 +164,12 @@ def post_evacuate(req: EvacReq):
     _check_city(req.city)
     hazard = routing.to_shape(req.hazard)
     return routing.evacuate(req.city, req.start, hazard, req.mode)
+
+
+@router.post("/route/amap")
+def post_route_amap(req: AmapRouteReq):
+    """高德在线路径规划（含实时路况下的用时）。坐标 WGS84 进出，内部自动 GCJ-02 转换。"""
+    return amap.route(req.start, req.end, req.optimize, req.mode, req.vias, req.alternatives)
 
 
 # ---------- 空间统计：热点 ----------
@@ -166,7 +184,8 @@ def post_hotspot(req: HotspotReq):
 @router.post("/service-area")
 def post_service_area(req: ServiceReq):
     _check_city(req.city)
-    return service_area.isochrone(req.city, req.center, tuple(req.bands), req.mode)
+    provider = "baidu" if req.baidu else "offline"
+    return service_area.isochrone(req.city, req.center, tuple(req.bands), req.mode, provider)
 
 
 # ---------- 洪水淹没 ----------

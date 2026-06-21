@@ -17,7 +17,7 @@ from functools import lru_cache
 import networkx as nx
 import numpy as np
 from scipy.spatial import cKDTree
-from shapely.geometry import LineString, shape
+from shapely.geometry import LineString, Point, shape
 
 from ..data_loader import load_roads, load_shelters
 from . import geoutils
@@ -77,6 +77,18 @@ def _nearest_node(g: nx.Graph, lon: float, lat: float):
     return nodes[idx]
 
 
+def _nearest_within(g: nx.Graph, lon: float, lat: float, max_m: float = 3000.0):
+    """最近节点；距离超过 max_m（米）则返回 None。
+
+    防止研究区外的点被静默吸附到边界道路、返回一条看似正常实则错误的路线
+    （例如把数十公里外的点直接吸到城内路网）。
+    """
+    node = _nearest_node(g, lon, lat)
+    if _haversine(lon, lat, g.nodes[node]["lon"], g.nodes[node]["lat"]) > max_m:
+        return None
+    return node
+
+
 def _graph_excluding(g: nx.Graph, hazard) -> nx.Graph:
     """返回去除与危险多边形相交边后的子图（用于避险绕行）。"""
     if hazard is None:
@@ -96,12 +108,17 @@ def _graph_excluding(g: nx.Graph, hazard) -> nx.Graph:
 MODE_SPEED_KMH = {"drive": None, "cycle": 16.0, "walk": 4.8, "transit": 22.0}
 MODE_CN = {"drive": "驾车", "cycle": "骑行", "walk": "步行", "transit": "公交"}
 
+# 驾车拥堵系数：实际平均车速约为道路自由流限速的该比例（含红绿灯、转向、拥堵）。
+# 离线路网无实时路况，用它把"自由流时间"放大为更接近现实的耗时，避免服务区/等时圈
+# "半小时开出几十公里"的高估。取值 0~1，越小越堵；杭州主城高峰可降到 0.45~0.5。
+_DRIVE_CONGESTION = 0.6
+
 
 def _edge_minutes(d: dict, mode: str) -> float:
     """某条边在指定交通方式下的通行时间（分钟）。"""
     spd = MODE_SPEED_KMH.get(mode)
-    if spd is None:                                  # 驾车：用道路限速
-        return d["time"]
+    if spd is None:                                  # 驾车：道路限速(自由流) → 按拥堵系数放大耗时
+        return d["time"] / _DRIVE_CONGESTION
     return d["length"] / (spd * 1000.0 / 60.0)
 
 
@@ -130,69 +147,132 @@ def _path_to_geojson(g: nx.Graph, path: list, optimize: str, mode: str = "drive"
     }
 
 
+def _full_path(g: nx.Graph, nodes: list, wfn) -> list:
+    """依次经过给定节点（起点→途径点→终点）的拼接路径。"""
+    full = [nodes[0]]
+    for a, b in zip(nodes[:-1], nodes[1:]):
+        seg = nx.shortest_path(g, a, b, weight=wfn)
+        full += seg[1:]                               # 去掉与上一段重复的连接点
+    return full
+
+
 def route(city: str, start: list[float], end: list[float],
           optimize: str = "time", hazard=None, mode: str = "drive",
-          vias: list[list[float]] | None = None) -> dict:
+          vias: list[list[float]] | None = None, alternatives: bool = False) -> dict:
     """
-    通勤路径规划（支持交通方式与途径点）。
+    通勤路径规划（支持交通方式、途径点、多条备选）。
 
-    - start / end：[lon, lat]
     - optimize："time"（最快）或 "length"（最短）
     - mode：drive/cycle/walk/transit，影响通行时间
     - vias：可选途径点列表 [[lon,lat],...]，路线依次经过
+    - alternatives=True：同时返回「最快」与「最短」两条作为备选（去重）
     - hazard：可选 shapely 多边形，路径将避开它
     """
+    if len(start) < 2 or len(end) < 2:               # 坐标校验，避免空/残缺坐标导致 500
+        return {"type": "FeatureCollection", "features": [],
+                "meta": {"error": "起讫点坐标格式应为 [lon, lat]"}}
     g = _graph_excluding(build_graph(city), hazard)
-    wfn = _weight_fn(mode, optimize)
     pts = [start] + list(vias or []) + [end]
-    nodes = [_nearest_node(g, p[0], p[1]) for p in pts]
+    nodes = []
+    for p in pts:
+        n = _nearest_within(g, p[0], p[1])
+        if n is None:                                 # 研究区外/离路网过远 → 不返回错误路线
+            return {"type": "FeatureCollection", "features": [],
+                    "meta": {"error": "有起点/终点/途经点不在研究区或离路网过远"}}
+        nodes.append(n)
+
+    # 备选时算「最快+最短」两条；否则按 optimize 单条。把用户当前选项排在前面。
+    if alternatives:
+        opts = ["time", "length"] if optimize == "time" else ["length", "time"]
+    else:
+        opts = [optimize]
+    label = {"time": "最快", "length": "最短"}
+
+    feats, seen = [], []
     try:
-        full_path = [nodes[0]]
-        for a, b in zip(nodes[:-1], nodes[1:]):
-            seg = nx.shortest_path(g, a, b, weight=wfn)
-            full_path += seg[1:]                      # 去掉与上一段重复的连接点
+        for opt in opts:
+            path = _full_path(g, nodes, _weight_fn(mode, opt))
+            line = _path_to_geojson(g, path, opt, mode)
+            key = (round(line["properties"]["length_m"]), round(line["properties"]["time_min"], 1))
+            if key in seen:                           # 最快与最短若是同一条则去重
+                continue
+            seen.append(key)
+            line["properties"]["rank"] = len(feats)
+            line["properties"]["strategy_cn"] = label.get(opt, opt)
+            feats.append(line)
     except nx.NetworkXNoPath:
         return {"type": "FeatureCollection", "features": [], "meta": {"error": "无可达路径"}}
-    return {"type": "FeatureCollection", "features": [_path_to_geojson(g, full_path, optimize, mode)],
+    if not feats:
+        return {"type": "FeatureCollection", "features": [], "meta": {"error": "无可达路径"}}
+
+    alts = [{"strategy_cn": f["properties"]["strategy_cn"],
+             "length_km": round(f["properties"]["length_m"] / 1000.0, 2),
+             "time_min": f["properties"]["time_min"]} for f in feats]
+    return {"type": "FeatureCollection", "features": feats,
             "meta": {"city": city, "optimize": optimize, "mode": mode,
-                     "mode_cn": MODE_CN.get(mode, mode), "vias": len(vias or [])}}
+                     "mode_cn": MODE_CN.get(mode, mode), "vias": len(vias or []), "alts": alts}}
 
 
 def evacuate(city: str, start: list[float], hazard=None, mode: str = "drive") -> dict:
     """
-    撤离路径规划：从起点出发，避开危险区，前往可达的最近避难场所（可选交通方式）。
+    撤离路径规划：从起点前往**安全、可达、容量足**的最优避难场所（可选交通方式）。
 
-    返回选中的避难场所点 + 撤离路线。
+    相比只挑"最近"，这里更贴近应急决策：
+      1) 危险区(hazard)做 ~80m 缓冲，模拟道路封控/积水边缘，删除其上的道路；
+      2) **排除落在危险区内的避难所**（自身被淹的避难所不可用）；
+      3) 候选避难所按「可达时间 + 容量」综合评分择优，并在结果里给出推荐依据。
     """
-    g = _graph_excluding(build_graph(city), hazard)
-    s = _nearest_node(g, start[0], start[1])
+    if len(start) < 2:                               # 坐标校验
+        return {"type": "FeatureCollection", "features": [],
+                "meta": {"error": "撤离起点坐标格式应为 [lon, lat]"}}
+    # 危险区缓冲：约 0.0008°≈80m，模拟封控/积水边缘风险
+    hz = hazard.buffer(0.0008) if hazard is not None else None
+    g = _graph_excluding(build_graph(city), hz)
+    s = _nearest_within(g, start[0], start[1])
+    if s is None:
+        return {"type": "FeatureCollection", "features": [],
+                "meta": {"error": "撤离起点不在研究区或离路网过远"}}
     wfn = _weight_fn(mode, "time")
 
     shelters = load_shelters(city).get("features", [])
-    best = None
+    cands = []
     for sh in shelters:
         lon, lat = sh["geometry"]["coordinates"][:2]
+        if hz is not None and hz.contains(Point(lon, lat)):
+            continue                                  # 避难所自身在危险区内 → 不可用
         node = _nearest_node(g, lon, lat)
         try:
-            length = nx.shortest_path_length(g, s, node, weight=wfn)
+            t = nx.shortest_path_length(g, s, node, weight=wfn)
         except nx.NetworkXNoPath:
-            continue
-        if best is None or length < best[0]:
-            best = (length, node, sh)
+            continue                                  # 道路被淹断、不可达
+        cap = float(sh["properties"].get("capacity", 0) or 0)
+        cands.append({"time": float(t), "node": node, "sh": sh, "cap": cap})
 
-    if best is None:
-        return {"type": "FeatureCollection", "features": [], "meta": {"error": "无可达避难场所"}}
+    if not cands:
+        return {"type": "FeatureCollection", "features": [],
+                "meta": {"error": "无安全可达的避难场所（可能都被淹没或道路中断）"}}
 
-    _, target_node, shelter = best
-    path = nx.shortest_path(g, s, target_node, weight=wfn)
+    # 综合评分：时间越短越好(权重0.6) + 容量越大越好(权重0.4)，均归一化
+    tmax = max(c["time"] for c in cands) or 1.0
+    cmax = max(c["cap"] for c in cands) or 1.0
+    for c in cands:
+        c["score"] = 0.6 * (1 - c["time"] / tmax) + 0.4 * (c["cap"] / cmax)
+    best = max(cands, key=lambda c: c["score"])
+
+    path = nx.shortest_path(g, s, best["node"], weight=wfn)
     line = _path_to_geojson(g, path, "time", mode)
     line["properties"]["type"] = "evacuation"
+    sh = best["sh"]
+    note = "" if mode == "drive" else f"；{MODE_CN.get(mode, mode)}为车行路网近似（非真实公交网）"
     return {
         "type": "FeatureCollection",
-        "features": [line, {"type": "Feature", "geometry": shelter["geometry"],
-                            "properties": {**shelter["properties"], "type": "shelter"}}],
-        "meta": {"city": city, "shelter": shelter["properties"].get("name"),
-                 "mode": mode, "mode_cn": MODE_CN.get(mode, mode)},
+        "features": [line, {"type": "Feature", "geometry": sh["geometry"],
+                            "properties": {**sh["properties"], "type": "shelter"}}],
+        "meta": {"city": city, "shelter": sh["properties"].get("name"),
+                 "capacity": int(best["cap"]), "time_min": round(best["time"], 1),
+                 "candidates": len(cands), "mode": mode, "mode_cn": MODE_CN.get(mode, mode),
+                 "reason": f"在 {len(cands)} 个安全可达避难所中综合最优"
+                           f"（{round(best['time'], 1)} 分钟可达，容量 {int(best['cap'])} 人）" + note},
     }
 
 
